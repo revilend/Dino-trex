@@ -1,4 +1,4 @@
-# DINO.EXE — "Buffering Run"
+# Pixel Dino: Parkour Run
 
 A single-file parody of the Chrome offline T-Rex runner: **one self-contained
 `index.html`** with HTML5 Canvas + vanilla JavaScript. No libraries, no build
@@ -15,11 +15,13 @@ so a crash is never a total loss.
 
 ```bash
 npm run dev        # or: node server.mjs   (serves on $PORT, defaults to 5173)
-npm test           # headless harness: 649 checks across physics, input, audio,
+npm test           # headless harness: 768 checks across physics, input, audio,
                    # the shop, bullet time, the five bosses, the checkpoints,
-                   # the power-ups, the 100,000m finish, the menus, mobile and
-                   # the PWA manifest / service worker / icons that make the
-                   # game installable and APK-ready
+                   # the power-ups, the 100,000m finish, the menus, mobile,
+                   # the landscape fullscreen layout, the app name in every
+                   # place Play and Android read it, and the PWA manifest /
+                   # service worker / icons that make the game installable and
+                   # AAB-ready
 ```
 
 Any static file server works — or double-click `index.html`.
@@ -30,7 +32,10 @@ The game is a normal web page first and an app second — and a game about being
 **offline** should genuinely work offline. It ships everything a browser needs
 to install it:
 
-- a **`manifest.webmanifest`** asking for `display: standalone`;
+- a **`manifest.webmanifest`** asking for `display: fullscreen` and
+  **`orientation: landscape`**, so an installed APK (whether Chrome's own
+  WebAPK or a Trusted Web Activity) launches the device **locked to landscape,
+  with no status bar** — and falls back to `standalone` if fullscreen is refused;
 - a **service worker** (`sw.js`) that caches the shell, so the game boots with
   no network at all;
 - **real PNG icons** — 192, 512, a `maskable` 512 that survives Android's
@@ -40,7 +45,10 @@ to install it:
 - a **`⬇ INSTALL` chip** in the top bar that appears only once the browser has
   actually offered an install prompt, and calls it for you;
 - a **`theme-color`** that follows the sky, so the Android status bar turns dark
-  at night with the rest of the world.
+  at night with the rest of the world;
+- **safe-area insets on `<body>`**, so a notch, a rounded corner or a gesture bar
+  can never clip the 16:9 game box, the HUD or the touch pad — the box is
+  measured *inside* the insets rather than centred over them.
 
 The worker is deliberately **network-first for the page itself** — an online
 visitor always gets the newest build, and the cached copy is only there for
@@ -49,12 +57,23 @@ never change shape.
 
 That is also exactly the installability checklist a **Trusted Web Activity**
 enforces before it will hand your site to Android as a native app, which is why
-this repo is ready to be packaged into an **APK**: see **[ANDROID.md](ANDROID.md)**
-for both routes — Bubblewrap/TWA (wrap the hosted URL) and Capacitor (bundle the
-files into a self-contained APK) — with copy-pasteable commands, the
-`assetlinks.json` digital-asset-links step that removes the URL bar, signing,
-and the `@capacitor/assets` step that turns the 1024px icon into every Android
-mipmap.
+this repo is ready to be packaged into an **Android App Bundle**: see
+**[ANDROID.md](ANDROID.md)** for both routes — Bubblewrap/TWA (wrap the hosted
+URL) and Capacitor (bundle the files into a self-contained app) — with
+copy-pasteable commands, the `assetlinks.json` digital-asset-links step that
+removes the URL bar, the `bundleRelease` signing setup Play actually needs, the
+`@capacitor/assets` step that turns the 1024px icon into every Android mipmap,
+and a release checklist that maps each Play requirement to the file that
+satisfies it.
+
+**Landscape really is full-bleed.** The touch bar lives *inside* the game box, in
+the empty strip below the road line (the bar is 15.5% of the game height and the
+road sits at 160 of 216 world units, so there is a 26% band to sit in) — which
+means the extra band the layout reserves under the game is reserved **in portrait
+only**. In landscape a phone gets the whole 16:9 box, edge to edge, with no
+black bars down the sides. That band used to be reserved in both orientations,
+which silently shrank the landscape box to ~57% of the width; the harness now
+asserts the landscape box fills the viewport.
 
 The only thing that is *not* here is the Android toolchain itself: this
 workspace is a Node.js image with no JDK, Gradle or Android SDK, so the build
@@ -67,7 +86,7 @@ itself needs Android Studio or CI.
 | Jump / backflip double-jump | `Space` · `W` · `↑` · `K` | **tap anywhere on the field**, or **JUMP** |
 | Slide / rail-grind a cactus | hold `↓` · `S` · `A` | hold **↓ GRIND**, or drag down |
 | Perfect parry | `C` | **PARRY** — double-tap for the Laser Roar |
-| Rocket | `F` | **ROCKET** |
+| Rocket (or a pistol round, while the belt is loaded) | `F`, or `X` for the pistol alone | **ROCKET** |
 | Bullet time (SLOW) | `Shift` (either) | **SLOW** |
 | Grappling hook | `G` | **HOOK** |
 | Laser Roar (6s recharge) | `R`, or double-tap `C` | double-tap **PARRY** |
@@ -89,6 +108,43 @@ the dino upward into a backflip**. A pulsing cyan ring in front of the dino is
 the timing tell. With nothing in range it spends one rocket and fires the Pixel
 RPG missile, which blasts the first obstacle (or the boss) it reaches (+25).
 With an empty chamber it plays the dry *denied* blip and the button dims.
+
+### The pistol
+
+A red crate — rarer than the hat, and it **never spawns while your belt is
+already loaded** — gives you **12 rounds**. From then on the dino walks the road
+with a pistol held out in his forward hand, muzzle and all, and **the ROCKET
+button throws it**: press and a bullet leaves the barrel; empty the belt and the
+same button throws the missile again. One control, two tools.
+
+That is deliberate. The pistol is the obvious thing to want a *seventh* button
+for, and a bar that reflows is a bar whose hit targets move under the player's
+thumb — so the bar stays exactly six buttons long and the fire button grows a
+second weapon instead.
+
+The difference between the two is not cosmetic:
+
+| | **Pistol** | **Rocket** |
+| --- | --- | --- |
+| Costs | one round (you have up to 99) | one of `AMMO_MAX` rockets |
+| Rate | one shot every 220ms | one every 250ms |
+| Hits a boss for | 1 | 1 |
+| Pays an obstacle | **+10** | **+25** |
+| Screen shake | a nudge | a slam, with the screen flash |
+| Sound | a short dry crack | a swept roar with a tail |
+
+So the pistol is the right tool for the first 10,000m, where a cactus every
+few seconds costs you a missile and a fifth of your points; the rocket is the
+right tool for the five gates. Both are live at once — that is what the belt is
+for.
+
+The gun is drawn **after** the body, so it reads as being held rather than
+tucked behind, and it turns with the dino through a backflip — a gun that stays
+upright while he is upside down is the oldest tell of a prop that was bolted on
+instead of animated. Press `X` to fire it directly on the keyboard. The harness
+checks every rect of the sprite's own pixel table appears in the frame, which is
+a real check: a `SPT` call that never runs paints nothing while still leaving
+`P.gun` full of rounds.
 
 **SLOW** drops the whole world to **35% speed for 2 seconds** — obstacles, waves,
 your own jump — then needs 6 more seconds to recharge. The button counts the
@@ -200,7 +256,11 @@ into anything else:
 - **Top centre:** the progress bar and its `%`, the `100,000m` label, and the
   checkpoint / best-metres line underneath.
 - **Top right:** the high score over the running score, placed **below** the
-  DOM chips (`👑 GO PRO` / `PAUSE` / `SOUND`) rather than under them.
+  DOM chips (`👑 GO PRO` / `PAUSE` / `SOUND`) rather than under them. While a
+  full-screen panel is open the chips leave entirely, because a panel is 213 of
+  the 216 world units tall — the chips are not *near* it, they are inside it,
+  and they were printing `👑 GO PRO / PAUSE / SOUND` straight across the DINO
+  PRO panel's own `ACTIVE` label. They come straight back when it closes.
 
 The bands below stack in order and never touch — `toast`, then the flash
 (`CHECKPOINT 40,000m` / `⚠️ ROUTER BOSS ⚠️` / `BULLET TIME`). The test suite
@@ -265,23 +325,75 @@ closes in. The boss bar counts down: `IMPACT IN 5s`.
 
 ## The Grand Finale
 
-Reach **100,000m** and the 7G Wi-Fi Tower rolls in from the right and parks beside
-the track. Confetti rains, pixel fireworks burst, a victory fanfare plays, and the
-screen proclaims:
+Reach **100,000m** and the run stops dead — no scrolling, no spawning, and every
+control refuses, because the next ten seconds belong to the cutscene.
 
-> **YOU SURVIVED 100,000 METERS**
-> **CERTIFIED LEGEND**
+### Six beats
 
-You are paid **+1,000 bonus coins** on top of everything you scooped, and the
-**GOLDEN CROWN DINO** — the exclusive crown-and-aura skin — is unlocked for good
-if you didn't already own it. The **CERTIFIED LEGEND** title sticks to the title
-screen from then on. Beating the run also clears your checkpoint, because there
-is nothing left to resume.
+| # | Beat | What happens |
+| --- | --- | --- |
+| 1 | **Arrival** | the 7G Wi-Fi Tower rolls in from the right edge and plants itself centre-screen, arcing sparks off its mast |
+| 2 | **Flag jump** | the dino runs to the mast and backflips onto the antenna tip — a *scripted* arc, because the tip is 104 units up and a real jump tops out near 90 |
+| 3 | **Signal restore** | the five arcs on the tower light one at a time, 20% → 100%, a chime on each, and the mast starts glowing gold when the last one lands |
+| 4 | **Superhero landing** | he drops off the mast, lands on one knee and kicks up a cloud of pixel dust |
+| 5 | **Victory outfit** | a crown drops 26 units onto his head and settles, shades snap on, and a red royal cape flutters out behind him |
+| 6 | **Fireworks** | pixel fireworks and green-and-gold confetti, continuously, for good |
+
+The timeline is six named windows in `CFG` (`CIN_RUN` … `CIN_MODAL`) rather than
+one wall of drawing code, which is what lets the harness step to any beat
+directly. It matters: a cinematic that can only be seen by playing 100,000m is a
+cinematic nobody ever sees twice.
+
+The dino's position is **scripted every frame** rather than simulated. A ten-second
+arc that fights the physics is a scene that breaks the first time somebody retunes
+gravity.
+
+### The victory dialog
+
+At the end of it, a Chrome dialog:
+
+```
+┌─────────────────────────────────────────────┐
+│ Google Chrome                            ✕ │  blue title bar
+├─────────────────────────────────────────────┤
+│   👑 YOU SURVIVED 100,000 METERS!           │
+│   CERTIFIED LEGEND                          │
+│   Extinction Cancelled. Dinosaurs Ruled...  │
+│                                             │
+│   TOTAL DISTANCE        100,000 M           │
+│   TIME ELAPSED          8m 32s              │  measured by a real run clock
+│   BOSSES DEFEATED       5 / 5  ROUTER · QUEEN│
+│   BONUS REWARD          +1,000 WI-FI COINS  │
+│                                             │
+│   ┃ 👑 EMPEROR T-REX SKIN UNLOCKED ...     ┃ │  gold banner
+│   [ ▶ PLAY AGAIN ]    [ 🛒 OPEN WARDROBE ]  │
+│                                             │
+│   No cacti ... except the router.           │  post-credits
+└─────────────────────────────────────────────┘
+```
+
+The **elapsed time** is a real measurement: `update()` counts milliseconds while
+`G.state === "run"`, and `win()` freezes that number into the cutscene. A
+distance with no clock on it reads as an abstraction.
+
+You are paid **+1,000 bonus coins**, and the **GOLDEN CROWN DINO** — the exclusive
+crown-and-aura skin — is unlocked *and equipped*, then persisted, so it survives a
+relaunch. The **CERTIFIED LEGEND** title sticks to the title screen from then on.
+Beating the run also clears your checkpoint, because there is nothing left to
+resume.
+
+The dialog owns the screen, so it takes the same rule the shop and the VIP panel
+use: while it is open the `body` carries the `modal` class, which fades out the
+touch pad and the top-right chips. A panel 213 units tall in a 216-unit world has
+nowhere else for them to go.
+
+> The post-credits line reads *"No cacti or pterodactyls were harmed in the making
+> of this run… except the router."*
 
 ## Power-ups: the Hoverboard and Incognito Mode
 
-Two rare drops float along the track, and both are consumables you spend rather
-than unlocks you keep.
+Three rare drops float along the track, and all three are consumables you spend
+rather than unlocks you keep.
 
 ### Hoverboard
 
@@ -450,8 +562,8 @@ and the DINO PRO modal read as one family rather than three separate screens:
 - **A heading with a rule** that runs out to the panel edge, over a content
   margin everything else sits inside.
 
-The **title card** is the front door. It frames the DINO.EXE logo over a gold
-`BUFFERING RUN` rule, and offers **▶ START** (or **▶ RESUME** when a checkpoint is
+The **title card** is the front door. It frames the PIXEL DINO logo over a gold
+`PARKOUR RUN` rule, and offers **▶ START** (or **▶ RESUME** when a checkpoint is
 banked) next to **SHOP** and **GO PRO**. If a checkpoint exists the card also
 grows a **RESUME / NEW RUN** pair, so you can pick up where you died or wipe the
 slate without hunting for a menu. The **game-over card** is dressed as an
@@ -494,9 +606,29 @@ run sails over, and PRO's `beamCd` really is half a normal run's.
 The panel lists the Golden Dino as well as the hoverboard, because **ACTIVATE PRO**
 unlocks both at once.
 
-One **"ACTIVATE PRO (FREE TEST / $0.99)"** toggle flips it on. Nothing is charged
-and nothing leaves the browser — `save.pro` is a local flag, and the chip settles
-into a solid **👑 PRO** when it's active.
+Eight two-line perks will not fit as stacked rows in a 216-unit-tall world, so
+they run as a **two-column grid**: a 30-unit pitch, each badge with its own
+column (`CROWN` is far wider than `2x`), and each name and blurb with a column
+of its own. The spacing is measured on **real glyph boxes, not baselines** — the
+harness reconstructs each label's box from its device-pixel anchor, its font
+size and a true Courier advance, then checks that no two of them share a pixel.
+That distinction matters: the first version of this grid compared *baselines*,
+reported 6.1 units of clearance between the last blurb and the summary line, and
+was visibly printing them through each other on a phone, where 0.7 world units
+is under four device pixels. The label box now clears by 12.6.
+
+One **"ACTIVATE PRO"** toggle flips it on, under a line that reads
+**"FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY"**. Nothing is charged and
+nothing leaves the browser — `save.pro` is a local flag, and the chip settles into
+a solid **👑 PRO** when it's active.
+
+The panel used to advertise a **$0.99 one-time** unlock. That copy is gone, and
+it is gone on purpose: the pass genuinely charges nothing, and Google Play's
+payments policy does not allow an app with no billing integration to show a price
+it cannot take. The panel now carries **no currency symbol and no price
+anywhere**, and the test suite asserts that against both the source string and
+the labels the panel actually paints — including a check that no label matches
+`$` or a two-decimal number, so a price cannot quietly come back.
 
 ## Night phases and music
 
@@ -525,19 +657,85 @@ a five-step chirp for the kickflip, `smash` the board breaking, and `spy` a soft
 shhh as the world goes incognito. All of it runs through the same mute chip and
 the same night-phase pitch drop.
 
+## The Play Store listing
+
+Everything Play Console asks for before it will review an app is generated from
+this repo by one command, with the same zero-dependency PNG encoder as the icons:
+
+```bash
+npm run store       # -> store/*.png
+```
+
+| Asset | Size | What it is |
+| --- | --- | --- |
+| `store/feature-graphic-1024x500.png` | 1024×500 | the listing banner: title, the road, the dino, and the journey's own progress bar |
+| `store/screenshot-1-the-road-1920x1080.png` | 1920×1080 | mid-run, mid-jump, in daylight |
+| `store/screenshot-2-boss-gate-1920x1080.png` | 1920×1080 | **Cyber Mecha-Rex** at 75,000m, at night, with its laser waves in the air |
+| `store/screenshot-3-dino-pro-1920x1080.png` | 1920×1080 | the real DINO PRO panel, all eight perks |
+| `store/screenshot-4-wardrobe-1920x1080.png` | 1920×1080 | the skin wardrobe, coins and all |
+
+**The screenshots are the real game, not mock-ups.** The whole game is drawn with
+exactly two canvas calls — `fillRect` and `fillText` — with no alpha and no
+gradients, because every fade in it is a colour mix rather than a `globalAlpha`.
+That means a frame can be rasterised *exactly* by implementing those two calls,
+which is what `make-store-assets.cjs` does: it runs the real `index.html` in a
+sandbox, steps the real simulation to a real state, and paints the real HUD, the
+real boss and the real panels into a 1920×1080 buffer. Change the game and
+re-run it and the listing follows.
+
+Text needed a font and there is no font file to load, so the generator carries
+its own **5×7 pixel face** whose advance is set to **0.6em — exactly Courier
+New's**. That is not a cosmetic choice: it is what puts every label on the same
+pixel the real game puts it on, so the panel layouts in the screenshots are the
+real layouts rather than an approximation of them.
+
+`store-look.cjs` decodes any of those PNGs back to ASCII
+(`node store-look.cjs store/feature-graphic-1024x500.png 150 40`, with optional
+`x0 y0 x1 y1` to zoom) so the artwork can be checked from a terminal, the same
+way `shoot.cjs` checks the live game.
+
+The harness asserts every one of them exists, is a real PNG, and is exactly the
+size Play requires in 24-bit truecolour with no alpha.
+
+### The AAB
+
+Play does not accept an APK for a new app — it takes an **Android App Bundle**,
+which Play then splits per device. `ANDROID.md` covers the whole route: the
+`build.gradle` fields Play reads (`applicationId`, `versionCode`, `versionName`,
+`targetSdkVersion`), `bundleRelease` with an upload key, `bundletool` for
+sideloading a bundle onto your own phone, Play App Signing, and a GitHub Actions
+workflow so the bundle can be built without installing Android Studio. The
+release checklist at the end of that file lists every Play requirement next to
+the repo file that already satisfies it.
+
+### Privacy policy
+
+**[PRIVACY.md](PRIVACY.md)** is the policy, and it is short because the facts
+make it short: **no data is collected, and none is shared, because there is
+none.** The game contains no `fetch`, no `XMLHttpRequest`, no `sendBeacon`, no
+WebSocket, no tracking and no third-party scripts or fonts — `index.html` has no
+external URL in it at all. Everything you play lives in a single
+`localStorage` key, `dinoexe.save.v2`, on your own device, and never leaves it.
+An offline game about being offline cannot phone home, which is the strongest
+possible evidence for the claim.
+
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `index.html` | The entire game. Self-contained and portable. |
 | `server.mjs` | Zero-dependency static server for preview / hosting. |
-| `smoke-test.cjs` | Headless harness that drives the real script in a VM (649 checks). |
+| `smoke-test.cjs` | Headless harness that drives the real script in a VM (768 checks). |
 | `skin-card.cjs` | Dev-only: renders the skins as ANSI pixel art + `skins.svg`, and reports each accessory's alignment against the Chrome eye notch. |
-| `manifest.webmanifest` | PWA metadata: standalone display, the icon set, theme colours. |
+| `manifest.webmanifest` | PWA metadata: **fullscreen + landscape** display, the icon set, theme colours, the app name. |
 | `sw.js` | Offline service worker. Network-first for the page (never a stale build), cache-first for the icons. |
 | `icons/` | App icons, generated — 192, 512, a maskable 512, a 180px Apple touch icon, a 32px favicon and a 1024px source. |
 | `make-icons.cjs` | Dev-only: rasterises `SPR.classic_idle` into those PNGs with a hand-rolled encoder on top of `zlib`. No dependencies. |
-| `ANDROID.md` | How to wrap the game into a real Android APK — Trusted Web Activity and Capacitor, step by step. |
+| `png.cjs` | The shared PNG encoder + tiny raster (8-bit truecolour, no alpha), used by both generators. No dependencies. |
+| `make-store-assets.cjs` | Dev-only: runs the real game in a sandbox and renders the Play feature graphic and four 1920×1080 screenshots. `npm run store` |
+| `store-look.cjs` | Dev-only: decodes a `store/*.png` back to ASCII so the listing artwork can be eyeballed (and zoomed) from a terminal. |
+| `PRIVACY.md` | The privacy policy: no data collected, `localStorage` only, no third parties. |
+| `ANDROID.md` | How to ship it to Play as an **Android App Bundle** — Trusted Web Activity and Capacitor, `bundleRelease`, signing, `bundletool`, CI, and the release checklist. |
 | `shoot.cjs` | Dev-only: renders any game frame as ANSI true-colour ASCII so the layout can be eyeballed from a terminal. `node shoot.cjs "<setup>" <frames> "<state expression>"` |
 | `skins.svg` | Generated by `skin-card.cjs` — the skins at 7× with the Chrome frame ghosted underneath. |
-| `package.json` | `dev` / `start` / `test` / `icons` scripts. No dependencies. |
+| `package.json` | `dev` / `start` / `test` / `icons` / `store` scripts. No dependencies. |

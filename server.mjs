@@ -38,5 +38,5 @@ createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "text/plain" }).end("404 Not Found");
   }
 }).listen(PORT, "0.0.0.0", () => {
-  console.log("DINO.EXE served on http://0.0.0.0:" + PORT);
+  console.log("Pixel Dino: Parkour Run served on http://0.0.0.0:" + PORT);
 });

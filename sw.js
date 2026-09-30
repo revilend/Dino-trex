@@ -1,4 +1,4 @@
-/* DINO.EXE — Buffering Run: the offline worker.
+/* Pixel Dino: Parkour Run — the offline worker.
    A game about being offline should genuinely work offline, and a service
    worker is also one of the installability requirements a Trusted Web Activity
    checks before it will hand the page to Android as an app.
@@ -7,7 +7,7 @@
    gets the newest build (never a stale cache), falling back to the cached copy
    when there is no network.  CACHE FIRST for the icons and the manifest, which
    never change shape. */
-const CACHE = "dinoexe-v1";
+const CACHE = "pixeldino-parkour-v1";
 const SHELL = [
   "./",
   "manifest.webmanifest",

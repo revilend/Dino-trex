@@ -8,6 +8,9 @@ const path = require("path");
 const file = process.argv[2] || "index.html";
 const html = fs.readFileSync(path.join(__dirname, file), "utf8");
 const src = html.match(/<script>([\s\S]*)<\/script>/)[1];
+/* the whole file, not just its script: several checks assert on the markup and
+   the stylesheet itself, which no amount of running the game would prove. */
+const CSS_TXT = html;
 
 /* ------------------------------- DOM stubs -------------------------------- */
 const reg = new Map();                 /* id -> {type: [fn]} */
@@ -186,6 +189,7 @@ function arena() {
     P.board = 0; P.boardT = 0; P.spin = 0; P.spy = 0; P.spyT = 0; P.ghost = 0; P.sink = 0;
     P.bob = 0; P.bobV = 0;
     P.hook = null; P.hookT = 0;
+    P.gun = 0; P.gunCd = 0; P.gunFlash = 0;
     save.boards = 0; G.lastParry = -1;
     G.combo = 0; G.comboT = 0; G.beamT = 0; G.beamCd = 0; G.arc.length = 0;
     P.x = Math.round(WW * 0.09);
@@ -337,7 +341,20 @@ function measureSpacing(frames, score) {
      cannot die: the road is then measured in one unbroken run instead of a
      chain of crash-restarts, whose resets would reset G.road and quietly
      skew the pace — and so the sample, and the share of birds in it. */
-  step(frames, () => read(`P.board = 1; P.boardT = 9999; P.shield = 9999; if (G.state === 'over' || G.state === 'win') start(); ${pin}`));
+  /* ...and seed the RNG across the whole measurement.  The late pool is 4
+     cactus to 1 pterodactyl, but they arrive in bursts rather than
+     independently, so an unseeded 32-obstacle sample swings the ground share
+     between 0.80 and 0.59 and fails the suite at random — which is how this
+     check spent a decade's worth of runs being a coin flip rather than a
+     regression test.  A fixed LCG makes the number reproducible. */
+  const realRandom = Math.random;
+  let seed = 0x2f6e2b1 >>> 0;
+  Math.random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  try {
+    step(frames, () => read(`P.board = 1; P.boardT = 9999; P.shield = 9999; if (G.state === 'over' || G.state === 'win') start(); ${pin}`));
+  } finally {
+    Math.random = realRandom;
+  }
   const roads = read("window.__roads"), kinds = read("window.__kinds");
   const gaps = [];
   for (let i = 1; i < roads.length; i++) gaps.push(roads[i] - roads[i - 1]);
@@ -1199,9 +1216,205 @@ step(1);
 check("the victory screen is painted", drawn.length > 40, drawn.length);
 step(30);
 check("confetti and fireworks keep bursting", read("G.parts.length") > 0, read("G.parts.length"));
-read("G.t = G.restartAt + 1;");
-down("Space");
-check("space restarts from the victory screen", read("G.state") === "run" && read("G.meters") === 0, read("G.state"));
+read("G.winT = CFG.CIN_MODAL; G.cine.step = 6;");
+step(1);
+down("Space"); up("Space");
+check("the cutscene ignores input — space does not skip it",
+  read("G.state") === "win", read("G.state"));
+check("and the dialog is up, with PLAY AGAIN and OPEN WARDROBE on it",
+  read("ui.some(b => b.id === 'again')") && read("ui.some(b => b.id === 'shop')"),
+  read("ui.map(b => b.id)"));
+tapWorld(read("ui.find(b => b.id === 'again')"));
+check("PLAY AGAIN starts a fresh run", read("G.state") === "run" && read("G.meters") === 0, read("G.state"));
+
+/* ------------------------------ the cutscene ------------------------------ */
+/* Six beats, each stepped to on its own and asserted on: a cinematic is the
+   easiest thing in this game to break silently, because it only ever runs
+   once, at the end, to someone who has already waited ten minutes for it. */
+section("CUTSCENE: the six beats of the 100,000m finale");
+arena();
+read("save.coins = 0; save.owned = ['classic']; save.title = ''; persist();"
+   + " G.bosses = [true,true,true,true,true]; G.bossIdx = 5;"
+   + " G.road = (CFG.FINISH - 5) / CFG.M_PER_UNIT; G.runT = 512000;");
+step(20);
+const toWin = (t) => {
+  arena();
+  read("save.coins = 0; save.owned = ['classic']; save.title = ''; persist();"
+     + " G.bosses = [true,true,true,true,true]; G.bossIdx = 5;"
+     + " G.runT = 512000; G.road = (CFG.FINISH - 5) / CFG.M_PER_UNIT;");
+  step(20);
+  if (t !== undefined) { read("G.winT = " + t + ";"); step(1); }
+};
+/* every beat is reached by winding winT forward, because a cinematic that can
+   only be seen by playing 100,000m is a cinematic nobody ever sees twice.
+   `extra` steps real frames past it, which matters for anything that ramps
+   per-frame — the cape is 0.04 a frame, so landing on a beat and stopping
+   there proves nothing about the beat finishing. */
+const at = (t, extra) => { toWin(); read("G.winT = " + t + ";"); step(extra === undefined ? 1 : extra); };
+check("beat 0: the run stops dead — no scrolling, no spawning, input locked",
+  read("G.state") === "win" && read("G.speed") === 0 && read("G.spd") === 0, read("G.state"));
+check("beat 1: the tower starts off-screen right, scrolling in",
+  read("G.tower") > read("WW") + 20, read("G.tower"));
+check("and the beam is unreachable — every ability refuses during it",
+  (() => { const n = read("G.shots.length"); down("KeyF"); up("KeyF"); return read("G.shots.length") === n; })(),
+  read("G.shots.length"));
+step(60);
+check("beat 1: the tower plants itself centre-screen",
+  read("G.tower") === read("CFG.TOWER_X"), read("G.tower"));
+check("beat 1: with no signal on it yet — the arcs are all dark",
+  read("G.cine.arc") === 0, read("G.cine.arc"));
+/* the flag jump */
+{
+  const startX = read("P.x");
+  const runX = (() => { at(read("CFG.CIN_JUMP") + 20); return read("P.x"); })();
+  check("beat 2: he runs toward the mast", runX > startX + 10, [startX, runX]);
+  at(read("CFG.CIN_JUMP") + 62);
+  check("beat 2: and backflips through the air on the way up",
+    read("P.flip") >= 0 && read("P.y") > 0, [read("P.flip"), read("P.y")]);
+  at(read("CFG.CIN_JUMP") + 120);
+  check("beat 2: he lands on the antenna, at the top of the mast",
+    read("P.y") === 104 && Math.abs(read("P.x") - read("antennaX()")) <= 24,
+    [read("P.y"), read("P.x"), read("antennaX()")]);
+  check("beat 2: on the road's far side of it, not through it",
+    read("P.x") < read("towerX()"), [read("P.x"), read("towerX()")]);
+}
+/* the signal */
+const sigSeen = [];
+{
+  at(read("CFG.CIN_SIGNAL"));
+  for (let i = 0; i < 5; i++) { step(28); sigSeen.push(read("G.cine.arc")); }
+  check("beat 3: the arcs fill one at a time, 20% through to 100%",
+    sigSeen.join() === "1,2,3,4,5", sigSeen);
+  check("beat 3: and the whole fill has room to breathe before he drops",
+    read("CFG.CIN_LAND") - read("CFG.CIN_SIGNAL") >= 140,
+    read("CFG.CIN_LAND") - read("CFG.CIN_SIGNAL"));
+}
+/* the landing */
+at(read("CFG.CIN_LAND") + 20);
+check("beat 4: he drops off the mast", read("P.y") < 104 && read("P.y") > 0, read("P.y"));
+at(read("CFG.CIN_LAND") + 44);
+check("beat 4: and lands on the ground, kicking up pixel dust",
+  read("P.y") === 0 && read("G.cine.dust") === 1 && read("G.parts.length") > 10,
+  [read("P.y"), read("G.parts.length")]);
+at(read("CFG.CIN_LAND") + 44, 40);
+check("beat 4: the dust settles rather than piling up forever",
+  read("G.cine.dust") === 1 && read("G.parts.length") < read("G.cine.dustT") + 400,
+  read("G.parts.length"));
+/* the victory outfit */
+{
+  const ramp = [];
+  at(read("CFG.CIN_CROWN"));
+  for (let i = 0; i < 6; i++) { ramp.push(read("G.cine.cape")); step(5); }
+  check("beat 5: the cape and shades ramp in rather than snapping on",
+    ramp[0] < ramp[ramp.length - 1] && ramp[ramp.length - 1] === 1 &&
+    read("G.cine.shades") === 1, { ramp, shades: read("G.cine.shades") });
+  at(read("CFG.CIN_CROWN") + 30);
+  check("beat 5: and by the time the dialog is due the crown is fully down",
+    (() => { at(read("CFG.CIN_CROWN"), read("CFG.CIN_MODAL") - read("CFG.CIN_CROWN"));
+              return read("G.cine.cape") === 1 && read("G.cine.shades") === 1; })(),
+    { cape: read("G.cine.cape"), shades: read("G.cine.shades") });
+}
+{
+  const S = read("S"), OX = read("OX"), OY = read("OY");
+  const rects = read("SPR.crown.f[0]");
+  const off = read("SKIN_HEAD.stand");
+  const hx = read("P.x") + off[0], hy = read("GROUND") - 43 + off[1] - 12;
+  drawn.length = 0; step(1);
+  const missing = rects.filter(r => !drawn.some(d =>
+    Math.abs(d[0] - Math.round((hx - 4 + r[0]) * S + OX)) <= 1 &&
+    Math.abs(d[1] - Math.round((hy + r[1]) * S + OY)) <= 1 &&
+    d[2] === Math.max(1, Math.round(r[2] * S)) && d[3] === Math.max(1, Math.round(r[3] * S))));
+  check("beat 5: the crown is painted on his head, every rect of it",
+    missing.length === 0, { rects: rects.length, missing });
+}
+check("beat 5: and he is standing on the road in the Emperor skin",
+  read("P.y") === 0 && read("save.owned").indexOf("gold") >= 0 && read("save.skin") === "gold");
+at(read("CFG.CIN_MODAL") + 30);
+check("beat 6: fireworks and confetti never stop",
+  read("G.cine.fireT") > 0 && read("G.parts.length") > 0, read("G.parts.length"));
+check("beat 6: and the run's own clock was measured, not the cutscene's",
+  read("G.cine.runT") >= 512000 && read("G.cine.runT") < 513000, read("G.cine.runT"));
+at(read("CFG.CIN_MODAL") - 2);
+check("the dialog is still not up a frame before its time", read("ui").length === 0, read("ui.map(b => b.id)"));
+
+/* --------------------------- the victory dialog --------------------------- */
+at(read("CFG.CIN_MODAL"));
+const dialog = texts.map(t => t.s);
+/* the dialog is measured on its own: the HUD paints underneath it and the panel
+   covers it, so including those labels would test the HUD twice */
+texts.length = 0; read("ui.length = 0;");
+read("drawWin()");
+const dialogOwn = texts.map(t => t.s);
+check("the dialog opens as a Chrome window, with its blue title bar",
+  dialogOwn.some(s => /Google Chrome/.test(s)) && dialogOwn.some(s => /System Restored/.test(s)),
+  dialogOwn.slice(0, 8));
+check("headline: YOU SURVIVED 100,000 METERS, CERTIFIED LEGEND",
+  dialog.some(s => /100,000 METERS/.test(s)) && dialog.some(s => /CERTIFIED LEGEND/.test(s)));
+check("subtitle: Extinction Cancelled. Dinosaurs Ruled the Internet.",
+  dialog.some(s => /Extinction Cancelled/.test(s)), dialog.filter(s => /Extinction/.test(s)));
+check("stat: the total distance, in the words the run is measured in",
+  dialog.some(s => /100,000 M/.test(s)), dialog.filter(s => /100,000/.test(s)));
+check("stat: the elapsed time, computed from the run clock",
+  dialog.some(s => /^8m 32s$/.test(s)), dialog.filter(s => /^\d+m \d\ds$/.test(s)));
+check("stat: five of five bosses, by name",
+  dialog.some(s => /5 \/ 5/.test(s)) && dialog.some(s => /ROUTER/.test(s)));
+check("stat: the 1,000-coin bonus, paid in Wi-Fi coins",
+  dialog.some(s => /\+1,000 WI-FI COINS/.test(s)), dialog.filter(s => /1,000/.test(s)));
+check("the reward banner names the Emperor T-Rex skin",
+  dialog.some(s => /EMPEROR T-REX SKIN UNLOCKED/.test(s)), dialog.filter(s => /EMPEROR/.test(s)));
+check("and the skin really is unlocked AND equipped, not just announced",
+  read("save.owned").indexOf("gold") >= 0 && read("save.skin") === "gold", read("save.skin"));
+check("persisted, so it survives a relaunch",
+  read("JSON.parse(localStorage.getItem(SAVE_KEY)).owned").indexOf("gold") >= 0);
+check("both buttons are on the dialog and inside it",
+  (() => {
+    const w = 344, h = 213, x = read("(WW - 344) / 2"), y = 1;
+    const bad = read("ui").filter(b => b.x < x - 0.5 || b.x + b.w > x + w + 0.5 ||
+                                         b.y < y - 0.5 || b.y + b.h > y + h + 0.5);
+    return read("ui").length === 2 && bad.length === 0;
+  })(), read("ui").slice(0, 4));
+check("the post-credits line admits the router was not so lucky",
+  dialog.some(s => /except the router/.test(s)), dialog.filter(s => /router/.test(s)));
+/* the dialog must not print through itself — same rule the PRO panel follows.
+   textRows() is defined further down the file, so the boxes are rebuilt here
+   from the same model: a Courier advance, and the real glyph ink box. */
+{
+  const w = 344, h = 213, y = 1, S = read("S"), maxY = y + h, x = read("(WW - 344) / 2");
+  const rows = texts.filter(t => t.y / S >= y - 2).map(t => {
+    const fm = /(\d+(?:\.\d+)?)px/.exec(t.font || "");
+    const size = fm ? parseFloat(fm[1]) : 10;
+    const wpx = t.s.length * (size * 0.6 + (parseFloat(t.ls) || 0));
+    const x1 = t.align === "right" ? t.x - wpx : t.align === "center" ? t.x - wpx / 2 : t.x;
+    return { s: t.s, x1: x1 / S - x, x2: (x1 + wpx) / S - x,
+             y1: (t.y - size * 0.75) / S - y, y2: (t.y + size * 0.25) / S - y };
+  });
+  const clash = [];
+  for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) {
+    const a = rows[i], b = rows[j];
+    if (a.x1 < b.x2 - 0.6 && a.x2 > b.x1 + 0.6 && a.y1 < b.y2 - 0.6 && a.y2 > b.y1 + 0.6)
+      clash.push(a.s + " x " + b.s);
+  }
+  check("and not one of its own labels overlaps another", clash.length === 0, clash);
+  check("with every label inside the dialog",
+    rows.every(r => r.x1 >= -0.5 && r.x2 <= w + 0.5 && r.y1 >= y - 0.5 && r.y2 <= maxY + 0.5),
+    rows.filter(r => r.x1 < -0.5 || r.x2 > w + 0.5 || r.y1 < y - 0.5 || r.y2 > maxY + 0.5)
+        .map(r => r.s));
+}
+/* the dialog is a panel, so the chips must get out of its way */
+check("while the dialog owns the screen, the chips leave",
+  /body\.modal #topbar/.test(CSS_TXT) && els.body.classList.contains("modal"),
+  els.body.classList);
+check("and the touch bar goes with them", /body\.modal #pad/.test(CSS_TXT));
+/* PLAY AGAIN resets everything the cutscene touched */
+tapWorld(read("ui.find(b => b.id === 'again')"));
+check("PLAY AGAIN clears the finale's state and starts a clean run",
+  read("G.state") === "run" && read("G.tower") === null && read("G.meters") === 0 &&
+  read("G.runT") === 0 && read("G.cine.step") === 0, read("G.state"));
+/* and the wardrobe opens from the dialog, then closes back to it */
+at(read("CFG.CIN_MODAL"));
+tapWorld(read("ui.find(b => b.id === 'shop')"));
+check("OPEN WARDROBE opens the shop from the finale", read("G.state") === "shop", read("G.state"));
+check("and remembers it came from there", read("G.shopBack") === "win", read("G.shopBack"));
 
 /* ----------------------------- the whole journey --------------------------- */
 section("THE WHOLE 100,000m: five gates, in order, then the tower");
@@ -1246,7 +1459,16 @@ check("listing every perk PRO actually grants, hoverboard and golden dino includ
   read("PERKS.map(p => p[1])"));
 step(2);
 check("the modal paints a tap target", read("ui.some(b => b.id === 'proon')") === true);
-check("with a free-test label", /FREE TEST/.test(read("PERKS[0][2] + ' ' + G.proMsg + ' ' + G.state")) === false);
+/* Google Play's payments policy does not allow a price shown anywhere in an
+   app that has no billing integration, and the pass really is free, so the
+   panel may not print a currency symbol or a price at all.  This used to
+   assert on PERKS[0][2] + G.proMsg + G.state — none of which is panel copy —
+   so it could never fail.  The painted-label check further down is the real
+   one; this guards the source string itself. */
+check("and a price-free label, because Play's payments policy bans a price an app cannot charge",
+  /FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY/.test(CSS_TXT) &&
+  !/\$0\.99|ONE-TIME|NO PAYMENT TAKEN/.test(CSS_TXT),
+  /FREE TEST|\$[\d.]+/.exec(CSS_TXT));
 tapWorld(read("ui.find(b => b.id === 'proon')"));
 check("activating PRO flips the flag", read("save.pro") === true);
 check("and unlocks the Golden Dino free", read("save.owned.indexOf('gold') >= 0"));
@@ -1796,9 +2018,15 @@ check("the board pickup is on the track waiting to be collected",
    top edge is a reliable probe for where the board is actually painted.  A
    deck left parked on the road while the dino spins overhead reads as a bug. */
 const deckGlowY = () => {
+  /* in WORLD units: the deck's neon glow is 52x12 in a 384x216 world, and the
+     device-pixel size of that rect moves with the viewport, so filtering on it
+     in device px made this probe depend on the window size rather than on the
+     board.  (It did: the layout change that finally reserved the pad band in
+     portrait only enlarged the landscape box and silently broke the probe.) */
   const S = read("S");
-  const m = drawn.filter(r => r[2] > 175 && r[2] < 190 && r[3] > 36 && r[3] < 48);
-  return m.length ? Math.max(...m.map(r => r[1])) / S : null;
+  const m = drawn.map(r => [r[1] / S, r[2] / S, r[3] / S])
+                 .filter(r => r[1] > 51 && r[1] < 53 && r[2] > 11 && r[2] < 13);
+  return m.length ? Math.max(...m.map(r => r[0])) : null;
 };
 arena();
 read("G.clouds.length = 0; G.cloudT = 99999; save.boards = 1; P.board = 1;");
@@ -1841,11 +2069,17 @@ read("G.clouds.length = 0; G.cloudT = 99999; save.boards = 1; P.board = 1;");
 step(30);
 drawn.length = 0;
 step(1);
-const pool = drawn.filter(r => r[3] <= 4 && r[2] >= 40);      /* wide, flat rows on the road */
-check("the deck throws a wide flat pool of light onto the road", pool.length >= 4, pool.length);
+/* world units again: "wide and flat" is a property of the 384-unit world, not
+   of whichever device scale the window happens to be at */
+const flatRows = (minW) => {
+  const S = read("S");
+  return drawn.filter(r => r[3] / S <= 3 && r[2] / S >= minW).length;
+};
+const pool = flatRows(40);
+check("the deck throws a wide flat pool of light onto the road", pool >= 4, pool);
 const poolFoot = (() => { drawn.length = 0; read("P.board = 0;"); step(1);
-  return drawn.filter(r => r[3] <= 4 && r[2] >= 40).length; })();
-check("which a dino standing on the road does not", poolFoot < pool.length / 2, [pool.length, poolFoot]);
+  return flatRows(40); })();
+check("which a dino standing on the road does not", poolFoot < pool / 2, [pool, poolFoot]);
 arena();
 read("G.clouds.length = 0; G.cloudT = 99999; save.boards = 1; P.board = 1;");
 step(30);
@@ -1853,8 +2087,8 @@ down("Space");
 step(12);
 drawn.length = 0;
 step(1);
-const poolHigh = drawn.filter(r => r[3] <= 4 && r[2] >= 40).length;
-check("and it tightens and dims as the deck climbs away", poolHigh < pool.length, [pool.length, poolHigh]);
+const poolHigh = flatRows(40);
+check("and it tightens and dims as the deck climbs away", poolHigh < pool, [pool, poolHigh]);
 
 /* ---- the rider leans into the run instead of being glued to the deck ---- */
 /* SPT rotates about the sprite's own centre, so a turned sprite records its
@@ -2164,9 +2398,25 @@ const manifestRaw = readFile("manifest.webmanifest");
 let manifest = null;
 try { manifest = JSON.parse(manifestRaw); } catch (e) { manifest = null; }
 check("a web app manifest ships with the game", !!manifest, manifestRaw === null ? "missing" : "unparseable");
-check("it opens standalone, from its own scope",
-  !!manifest && manifest.display === "standalone" && manifest.start_url === "./" && manifest.scope === "./",
+check("it opens fullscreen, from its own scope",
+  !!manifest && manifest.display === "fullscreen" && manifest.start_url === "./" && manifest.scope === "./",
   manifest && { d: manifest.display, s: manifest.start_url, sc: manifest.scope });
+/* An installed APK should be a landscape, chromeless game — that is the whole
+   shape of a runner, and the manifest is what a WebAPK and a TWA both read. */
+check("and it asks the app to be landscape, so an installed APK locks to it",
+  !!manifest && manifest.orientation === "landscape", manifest && manifest.orientation);
+check("with fullscreen first in the fallback chain, then standalone if refused",
+  !!manifest && Array.isArray(manifest.display_override) &&
+  manifest.display_override[0] === manifest.display &&
+  manifest.display_override.indexOf("standalone") > 0, manifest && manifest.display_override);
+check("the iOS home-screen app also drops its status bar over the game",
+  /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/.test(html));
+check("the viewport is already cover-fit, unzoomable, so the shell owns the screen",
+  /viewport-fit=cover/.test(html) && /user-scalable=no/.test(html) && /maximum-scale=1/.test(html));
+check("and the safe-area insets live on the body, so a notch cannot clip the game",
+  /body\s*\{[^}]*safe-area-inset-top[^}]*safe-area-inset-left[^}]*\}/.test(html));
+check("the page resizes into that inset area rather than the raw viewport",
+  /setProperty\("--padroom"/.test(src));
 check("and declares 192, 512 and maskable icons",
   !!manifest && manifest.icons.some(i => i.sizes === "192x192") &&
   manifest.icons.some(i => i.sizes === "512x512") &&
@@ -2219,7 +2469,8 @@ check("the pad is hidden until a touch is seen", (() => {
 })());
 read("enableTouchUI()");
 check("a touch turns the pad on", els.body.classList.contains("touch") === true);
-check("and reserves a band under the game for it", els.wrap.style.paddingBottom !== "");
+check("and reserves a band under the game for it",
+  /^\d/.test(els.wrap.style.getPropertyValue("--padroom")), els.wrap.style.getPropertyValue("--padroom"));
 read("G.state = 'pro';");
 step(2);
 check("a modal fades the pad out from under itself", els.body.classList.contains("modal") === true);
@@ -2265,7 +2516,12 @@ const proLabels = (() => {
     const size = +m[1];
     const wpx = t.s.length * (size * 0.6 + (parseFloat(t.ls) || 0));
     const x1 = t.align === "right" ? t.x - wpx : t.align === "center" ? t.x - wpx / 2 : t.x;
-    out.push({ s: t.s, x1: x1 / Sc, x2: (x1 + wpx) / Sc, y1: (t.y - size) / Sc, y2: (t.y + size * 0.2) / Sc });
+    /* a real glyph box, not a baseline: Courier's cap height sits ~0.73em above
+       the baseline and its descenders drop ~0.21em below, so anything between
+       those two lines is ink.  The old model used a full em above and 0.2em
+       below, which reported 6.1 units of clearance for two labels that were
+       visibly printing through each other on a phone. */
+    out.push({ s: t.s, x1: x1 / Sc, x2: (x1 + wpx) / Sc, y1: (t.y - size * 0.75) / Sc, y2: (t.y + size * 0.25) / Sc });
   }
   /* the HUD is still painted under the modal, so only what the panel itself
      draws counts: everything from its own title onwards */
@@ -2285,9 +2541,27 @@ for (let i = 0; i < proLabels.length; i++) for (let j = i + 1; j < proLabels.len
 check("and not one of those labels overlaps another", proColHits.length === 0, proColHits);
 const lastBlurb = proLabels.filter(t => t.s === "Nine seconds of ghost.")[0];
 const proSummary = proLabels.filter(t => /9s GHOST/.test(t.s))[0];
-check("the summary line keeps clear of the last row of perks",
-  !!lastBlurb && !!proSummary && proSummary.y1 - lastBlurb.y2 > 3,
+check("the summary line keeps real clearance from the last row of perks",
+  !!lastBlurb && !!proSummary && proSummary.y1 - lastBlurb.y2 > 8,
   lastBlurb && proSummary && [+(proSummary.y1 - lastBlurb.y2).toFixed(2)]);
+/* ...and not one label in the panel may carry a price, for the reason above. */
+const proPriced = proLabels.filter(t => /[$\u20ac\u00a3]|\d[.,]\d\d/.test(t.s)).map(t => t.s);
+check("and not one label in the panel quotes a price", proPriced.length === 0, proPriced);
+/* the panel fills 213 of the 216 world units, so a chip parked in the top-right
+   corner of the shell is *always* inside it.  There is no box to move it to, so
+   the only correct answer is that the chips leave while a panel owns the screen —
+   exactly what the touch pad already does. */
+check("a modal takes the top-right chips out of its own panel",
+  /body\.modal #topbar\s*\{[^}]*opacity:\s*0[^}]*\}/.test(CSS_TXT) &&
+  /body\.modal #topbar\s*\{[^}]*pointer-events:\s*none[^}]*\}/.test(CSS_TXT),
+  /body\.modal #topbar\s*\{[^}]*\}/.exec(CSS_TXT));
+check("and the body actually gets that modal class while the panel is open",
+  els.body.classList.contains("modal"));
+check("but the chips come back the moment it closes", (() => {
+  read("G.state = 'run';"); step(1);
+  return !els.body.classList.contains("modal");
+})());
+read("G.state = 'pro';"); step(1);
 read("G.state = 'shop'; G.shopSel = 0;");
 step(2);
 check("the skin shop panel is intact too", read("ui.some(b => /^skin:/.test(b.id))"));
@@ -2297,6 +2571,133 @@ check("the skin shop panel is intact too", read("ui.some(b => /^skin:/.test(b.id
    ability does its job on its own: every press causes exactly one effect, and
    nothing silently degrades into a spin with no physics behind it. */
 section("ABILITY AUDIT: every control, one press, one provable effect");
+
+/* PISTOL — a track crate, a spent belt, and a gun that is actually in the hand */
+arena();
+check("you start a run with an empty chamber", read("P.gun") === 0, read("P.gun"));
+read("giveGun(" + read("CFG.GUN_AMMO") + ")");
+check("the crate loads the whole belt", read("P.gun") === read("CFG.GUN_AMMO"), read("P.gun"));
+check("and says so", /PISTOL \+\d+/.test(read("G.toast")), read("G.toast"));
+check("naming the control that fires it, which is the existing ROCKET button",
+  /ROCKET BUTTON/.test(read("G.toast")), read("G.toast"));
+/* an empty chamber has to refuse rather than silently do nothing */
+read("P.gun = 0; P.gunCd = 0;");
+down("KeyX");
+check("an empty pistol is refused, not spent", read("P.gun") === 0 && read("G.shots.length") === 0,
+  [read("P.gun"), read("G.shots.length")]);
+up("KeyX");
+read("giveGun(" + read("CFG.GUN_AMMO") + "); P.gunCd = 0;");
+const gunBefore = read("P.gun");
+down("KeyX");
+check("PISTOL: one press throws exactly one round",
+  read("G.shots.length") === 1 && read("P.gun") === gunBefore - 1,
+  [read("G.shots.length"), read("P.gun")]);
+const gunShot = read("G.shots[0]");
+check("PISTOL: the round leaves the hand, not the hip",
+  gunShot && gunShot.gun === true && gunShot.y > 0 && gunShot.y < read("GROUND"),
+  gunShot);
+up("KeyX");
+check("PISTOL: and it sets its own cooldown, not the rocket's",
+  read("P.gunCd") > 0 && read("G.cool") === 0, [read("P.gunCd"), read("G.cool")]);
+down("KeyX"); up("KeyX");
+check("PISTOL: which cannot be spammed — the second press spends nothing",
+  read("P.gun") === gunBefore - 1, read("P.gun"));
+/* the ROCKET button is the same control, and it prefers the pistol */
+arena();
+read("G.ammo = 3; giveGun(8); P.gunCd = 0;");
+down("KeyF"); up("KeyF");
+check("the ROCKET button throws a pistol round while the belt is loaded",
+  read("G.shots.length") === 1 && read("G.shots[0].gun") === true && read("G.ammo") === 3,
+  [read("G.shots.length"), read("G.ammo")]);
+arena();
+read("G.ammo = 3; P.gunCd = 0;");
+down("KeyF"); up("KeyF");
+check("and throws the missile the moment the belt runs dry",
+  read("G.shots.length") === 1 && read("G.shots[0].gun") === undefined && read("G.ammo") === 2,
+  [read("G.shots.length"), read("G.ammo")]);
+/* the crate itself */
+arena();
+read("G.itemN = " + (read("CFG.GUN_EVERY") - 1) + ";");
+read("(function(){ spawnItems(false); })()");
+check("a pistol crate appears on the track",
+  read("G.items.some(i => i.k === 'gun')"), read("G.items.map(i => i.k)"));
+/* it must never be a waste of road while the belt is already full */
+arena();
+read("giveGun(12); G.itemN = " + (read("CFG.GUN_EVERY") - 1) + ";");
+read("(function(){ spawnItems(false); })()");
+check("but never while the belt is already full",
+  !read("G.items.some(i => i.k === 'gun')"), read("G.items.map(i => i.k)"));
+/* what it does to a cactus, and what it does to a boss */
+arena();
+addObs("cactus1", read("P.x + 60"));
+read("giveGun(12); P.gunCd = 0;");
+down("KeyX"); up("KeyX");
+step(12);
+check("PISTOL: a bullet pops the cactus",
+  read("G.obs.some(o => o.dead)"), read("G.obs.map(o => o.dead)"));
+check("PISTOL: for a tenth of the rocket's blast",
+  read("G.bonus") === read("CFG.GUN_PTS"), [read("G.bonus"), read("CFG.GUN_PTS")]);
+arena();
+armBoss(0);
+read("giveGun(12); P.gunCd = 0;");
+const bossHpBefore = read("G.boss && G.boss.hp");
+down("KeyX"); up("KeyX");
+step(10);
+check("PISTOL: and it chips a boss for one, like a rocket does",
+  read("G.boss") === null || read("G.boss.hp") < bossHpBefore,
+  [bossHpBefore, read("G.boss") && read("G.boss.hp")]);
+/* it has to be IN THE HAND, drawn after the body, and turning with a flip */
+arena();
+read("giveGun(12); G.clouds.length = 0; G.cloudT = 99999;");
+step(30);
+drawn.length = 0;
+step(1);
+{
+  /* every rect of the pistol's own ART row must appear in the frame, at the
+     hand's position — which is a real check, because a SPT that is never
+     called paints nothing while still leaving P.gun full of rounds */
+  const S = read("S"), OX = read("OX"), OY = read("OY");
+  const rects = read("SPR.pkPistol.f[0]");
+  const gx = read("P.x") + 26, gy = read("GROUND") - 17 - 7;   /* hand, not ducking */
+  const missing = rects.filter(r => !drawn.some(d =>
+    Math.abs(d[0] - Math.round((gx + r[0]) * S + OX)) <= 1 &&
+    Math.abs(d[1] - Math.round((gy + r[1]) * S + OY)) <= 1 &&
+    d[2] === Math.max(1, Math.round(r[2] * S)) && d[3] === Math.max(1, Math.round(r[3] * S))));
+  check("PISTOL: the whole gun is painted, every rect of its sprite table",
+    missing.length === 0, { rects: rects.length, missing });
+  check("PISTOL: held out in front of the dino's chest, not tucked behind him",
+    gx > read("P.x") + 20 && gy > 0 && gy < read("GROUND") - 6, { gx, gy });
+}
+arena();
+read("P.gun = 0;");
+step(1);
+drawn.length = 0;
+step(1);
+check("PISTOL: and it is not drawn at all with an empty chamber",
+  !drawn.some(d => d[2] === Math.max(1, Math.round(read("SPR.pkPistol.f[0]")[0][2]) * read("S"))),
+  drawn.length);
+/* the muzzle flash only exists on the frames a round is actually leaving */
+arena();
+read("giveGun(12); P.gunCd = 0;");
+down("KeyX"); up("KeyX");
+drawn.length = 0;
+step(1);
+check("PISTOL: with a muzzle flash on the frame the shot goes",
+  read("P.gunFlash") > 0, read("P.gunFlash"));
+step(30);
+check("PISTOL: and the flash clears itself", read("P.gunFlash") === 0, read("P.gunFlash"));
+/* the HUD shows the belt only while it is loaded */
+arena();
+read("G.ammo = 4; save.pro = true; save.coins = 1234;");
+texts.length = 0; drawn.length = 0; step(1);
+check("no pistol counter on the HUD with an empty chamber",
+  !texts.some(t => t.s === "x0") || !drawn.some(r => r[2] / read("S") > 21),
+  texts.map(t => t.s));
+read("giveGun(7);");
+texts.length = 0; step(1);
+check("and a live one with rounds in the belt",
+  texts.some(t => t.s === "x7"), texts.map(t => t.s));
+read("P.gun = 0;");
 
 /* JUMP + DOUBLE JUMP */
 arena();
@@ -2470,6 +2871,162 @@ check("MUTE: and flips it back", read("save.sound") === auditSound);
 /* every ability leaves the game in a state it can recover from */
 check("no ability test left the run dead or in a modal", read("G.state") === "run" && read("P.dead") === false,
   [read("G.state"), read("P.dead")]);
+
+/* -------------------------- name, landscape, AAB ------------------------- */
+/* An installed app is read through three different name fields — the Play
+   listing, the manifest, and the launcher label under the home-screen icon —
+   and they drift apart the moment one of them is edited on its own.  So they
+   are asserted against each other here, together with the title the on-screen
+   card actually paints. */
+section("NAME: one name across the listing, the manifest and the card");
+check("the document title is the full store name",
+  /<title>Pixel Dino: Parkour Run<\/title>/.test(CSS_TXT),
+  /<title>[^<]*<\/title>/.exec(CSS_TXT));
+check("and the manifest agrees with it",
+  manifest && manifest.name === "Pixel Dino: Parkour Run", manifest && manifest.name);
+check("while short_name is the label that fits under a home-screen icon",
+  manifest && manifest.short_name === "Pixel Dino" && manifest.short_name.length <= 15,
+  manifest && manifest.short_name);
+check("Play caps a title at 30 characters and we are well under it",
+  manifest && manifest.name.length <= 30, manifest && manifest.name.length);
+check("the iOS home-screen name is the same short name, not the long one",
+  /<meta name="apple-mobile-web-app-title" content="Pixel Dino">/.test(CSS_TXT));
+check("the manifest id is derived from the new name, so the app is a new app",
+  manifest && manifest.id === "/pixel-dino-parkour-run/", manifest && manifest.id);
+check("and the offline worker caches under its own name, not the old one",
+  /pixeldino-parkour-v1/.test(swSrc) && !/dinoexe-v1/.test(swSrc));
+const shipped = ["index.html", "manifest.webmanifest", "sw.js", "server.mjs"]
+  .map(f => fs.readFileSync(path.join(__dirname, f), "utf8"));
+check("no DINO.EXE survives anywhere in the shipped files",
+  shipped.every(t => !/DINO\.EXE/.test(t)));
+check("and the description meta says the new name too",
+  /content="Pixel Dino: Parkour Run\./.test(CSS_TXT));
+arena();
+read("G.state = 'ready';");
+step(2);
+const cardNames = texts.map(t => t.s);
+check("the title card paints the new wordmark",
+  cardNames.indexOf("PIXEL DINO") >= 0, cardNames.slice(0, 12));
+check("over a PARKOUR RUN rule", cardNames.indexOf("P A R K O U R   R U N") >= 0,
+  cardNames.slice(0, 12));
+check("and the old wordmark is nowhere in the frame",
+  !cardNames.some(s => /DINO\.EXE|B U F F E R I N G/.test(s)), cardNames.slice(0, 12));
+/* a longer name is a real risk here: PIXEL DINO is two chars wider than
+   DINO.EXE, and if it ever overran the card it would print through the panel
+   edge.  Measure the two title lines against the card's own box. */
+{
+  const [cx, cy, cw] = panelBounds.ready;
+  const cardRows = textRows(300).filter(r => r.y1 >= cy && r.y2 <= cy + 132);
+  const word = cardRows.find(r => r.s === "PIXEL DINO");
+  const rule = cardRows.find(r => r.s === "P A R K O U R   R U N");
+  check("the wordmark still fits inside the title card, with margin",
+    !!word && word.x1 > cx + 8 && word.x2 < cx + cw - 8,
+    word && { x1: +word.x1.toFixed(1), x2: +word.x2.toFixed(1), box: [cx, cx + cw] });
+  check("and so does the PARKOUR RUN rule under it",
+    !!rule && rule.x1 > cx + 8 && rule.x2 < cx + cw - 8,
+    rule && { x1: +rule.x1.toFixed(1), x2: +rule.x2.toFixed(1) });
+  check("with the wordmark and its rule not colliding",
+    !!word && !!rule && rule.y1 > word.y2 + 2, word && rule && [+(word.y2).toFixed(1), +rule.y1.toFixed(1)]);
+}
+
+/* Landscape is the whole shape of a runner app, and this is where it used to
+   break: the touch bar's reserved band was subtracted from the viewport height
+   in BOTH orientations, so a landscape phone got a 16:9 box 57% of the width,
+   with black bars either side — in an app whose manifest asks for fullscreen. */
+section("LANDSCAPE: full-bleed, with the pad inside the game box");
+const viewport = (w, h) => {
+  els.wrap.clientWidth = w; els.wrap.clientHeight = h;
+  sandbox.innerWidth = w; sandbox.innerHeight = h;
+  read("resize()");
+  return {
+    w: parseFloat(els.shell.style.width), h: parseFloat(els.shell.style.height),
+    pad: parseFloat(els.wrap.style.getPropertyValue("--padroom")) || 0
+  };
+};
+read("touchUI = true;");
+check("the touch pad is on, so this is a real phone layout",
+  read("touchUI") === true && els.body.classList.contains("touch"));
+/* a 20:9 phone in landscape, inside the safe-area insets (891 x 402 usable) */
+const land = viewport(891, 402);
+check("landscape reserves no band under the game at all", land.pad === 0, land.pad);
+check("so the game box fills the viewport height edge to edge",
+  Math.abs(land.h - 402) < 0.6, land);
+check("and keeps the 16:9 shape the world is authored in",
+  Math.abs(land.w / land.h - 16 / 9) < 0.002, +(land.w / land.h).toFixed(4));
+/* a 16:9 box on a 20:9 screen cannot fill the width without cropping, so the
+   correct result is FULL height and a centred letterbox — not a shrunken box */
+check("a 20:9 landscape phone uses the full height and as much width as 16:9 allows",
+  Math.abs(land.w - 402 * 16 / 9) < 0.6 && land.w < 891, land);
+check("so the black bars are the aspect difference alone, not wasted space",
+  (891 - land.w) < 402 * (20 / 9 - 16 / 9) + 0.6, +(891 - land.w).toFixed(1));
+/* a 4:3 tablet in landscape is taller than 16:9, so it is the other way round */
+const tab = viewport(1024, 768);
+check("a 4:3 tablet in landscape is exactly full width, no bars",
+  Math.abs(tab.w - 1024) < 0.6 && Math.abs(tab.h - 576) < 0.6, tab);
+/* portrait is the case the reserved band exists for, and it must still work */
+const port = viewport(402, 891);
+check("portrait still reserves a band under the game for the pad", port.pad > 0, port);
+check("and the game box plus that band still fit inside the viewport",
+  port.h + port.pad <= 891.6, port);
+check("portrait keeps the 16:9 shape as well",
+  Math.abs(port.w / port.h - 16 / 9) < 0.002, +(port.w / port.h).toFixed(4));
+check("and in portrait the box is narrower than the screen, not wider",
+  port.w <= 402.6 && port.w > 300, port);
+/* The pad lives inside the shell's own strip below the road, so compare the two
+   in WORLD units: the CSS gives the bar 15.5% of the game height, and the road
+   sits at GROUND of WH, leaving a band of (WH - GROUND) to sit in. */
+const padBand = 216 * 0.155, worldBand = 216 - read("GROUND");
+check("the touch bar fits inside the game box, below the road line",
+  padBand < worldBand && padBand > 0, { padBand: +padBand.toFixed(1), worldBand });
+check("so it never covers the canvas it is meant to sit under", land.pad === 0);
+check("the dpr-capped backing store still matches the box in landscape",
+  Math.abs(read("CW") / read("S") - read("WW")) < 0.01 && read("CW") > 0,
+  [read("CW"), read("CH"), read("S")]);
+/* the manifest is what a WebAPK and a TWA both read for the lock itself */
+check("and the manifest is still the one asking for landscape fullscreen",
+  manifest.orientation === "landscape" && manifest.display === "fullscreen");
+check("with the whole fallback chain, ending at minimal-ui",
+  manifest.display_override.join(",") === "fullscreen,standalone,minimal-ui",
+  manifest.display_override);
+viewport(960, 540);
+read("touchUI = false;");
+
+/* ------------------------------- store assets ----------------------------- */
+/* Play Console rejects a listing whose artwork is the wrong size, and a store
+   screenshot that no longer matches the build is worse than none, so the listing
+   assets are checked here like everything else.  make-store-assets.cjs renders
+   them from this same index.html, which is what keeps them honest. */
+section("STORE ASSETS: the Play Console listing");
+const STORE = [
+  ["feature-graphic-1024x500.png", 1024, 500],
+  ["screenshot-1-the-road-1920x1080.png", 1920, 1080],
+  ["screenshot-2-boss-gate-1920x1080.png", 1920, 1080],
+  ["screenshot-3-dino-pro-1920x1080.png", 1920, 1080],
+  ["screenshot-4-wardrobe-1920x1080.png", 1920, 1080]
+];
+/* the PNG signature, then IHDR: width, height, bit depth, colour type */
+function pngHeader(file) {
+  const b = fs.readFileSync(path.join(__dirname, "store", file));
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < 8; i++) if (b[i] !== sig[i]) return null;
+  if (b.toString("ascii", 12, 16) !== "IHDR") return null;
+  return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), depth: b[24], type: b[25] };
+}
+for (const [file, w, h] of STORE) {
+  let hd = null;
+  try { hd = pngHeader(file); } catch (e) { hd = null; }
+  check("store/" + file + " is a real PNG at " + w + "x" + h,
+    !!hd && hd.w === w && hd.h === h, hd);
+  check("  ...24-bit truecolour, no alpha, which is what Play accepts",
+    !!hd && hd.depth === 8 && hd.type === 2, hd);
+}
+check("the app icon Play asks for is the 512 we already ship",
+  fs.existsSync(path.join(__dirname, "icons", "icon-512.png")));
+check("and at least two screenshots exist, which is Play's minimum", STORE.length - 1 >= 2, STORE.length - 1);
+check("the generator that draws them is in the repo and dependency-free",
+  fs.existsSync(path.join(__dirname, "make-store-assets.cjs")) &&
+  /require\("\.\/png\.cjs"\)/.test(fs.readFileSync(path.join(__dirname, "make-store-assets.cjs"), "utf8")) &&
+  Object.keys(require(path.join(__dirname, "package.json")).dependencies || {}).length === 0);
 
 /* --------------------------------- report --------------------------------- */
 console.log("\n" + pass + " passed, " + fail + " failed, " + errors.length + " runtime errors");

@@ -10,7 +10,9 @@ const addTo = (b, t, f) => { (b[t] = b[t] || []).push(f); };
 const els = {};
 function mkEl(id) {
   const bag = {}; reg.set(id, bag);
-  return { id, style: { setProperty() {}, removeProperty() {} }, textContent: "", clientWidth: 1200, clientHeight: 675,
+  return { id, style: { _p: {}, setProperty(k, v) { this._p[k] = v; }, removeProperty(k) { delete this._p[k]; },
+                     getPropertyValue(k) { return this._p[k] === undefined ? "" : this._p[k]; } },
+           textContent: "", clientWidth: 1200, clientHeight: 675,
     classList: { s: new Set(), add(c) { this.s.add(c); }, remove(c) { this.s.delete(c); },
       contains(c) { return this.s.has(c); }, toggle(c, on) { if (on === undefined) on = !this.s.has(c); on ? this.s.add(c) : this.s.delete(c); } },
     closest: () => null, setPointerCapture() {}, addEventListener(t, f) { addTo(bag, t, f); },

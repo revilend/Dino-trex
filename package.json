@@ -1,13 +1,14 @@
 {
-  "name": "dino-exe-buffering-run",
+  "name": "pixel-dino-parkour-run",
   "version": "1.0.0",
   "private": true,
-  "description": "DINO.EXE — Buffering Run. A single-file HTML5 Canvas + vanilla JS parody of the Chrome Dino runner. No libraries, no build step.",
+  "description": "Pixel Dino: Parkour Run. A single-file HTML5 Canvas + vanilla JS parody of the Chrome Dino runner. No libraries, no build step.",
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "test": "node smoke-test.cjs",
-    "icons": "node make-icons.cjs"
+    "icons": "node make-icons.cjs",
+    "store": "node make-store-assets.cjs"
   }
 }
