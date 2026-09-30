@@ -1,0 +1,6 @@
+# Freebuff's local preview runtime state (pid + log) — machine-local only.
+.vly-run/
+
+# nothing here has any dependencies, so there is nothing to ignore beyond that
+node_modules/
+.DS_Store

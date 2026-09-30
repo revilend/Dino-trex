@@ -1,0 +1,2502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" id="metaTheme" content="#ffffff">
+<meta name="description" content="DINO.EXE — Buffering Run. An offline-Chrome-dino parody runner: jump, slide, rail-grind cacti and fire rockets. One self-contained HTML file, no libraries, no build step.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="DINO.EXE">
+<title>DINO.EXE — Buffering Run</title>
+<style>
+  :root { color-scheme: light; --paper:#ffffff; --ink:#535353; --soft:#8f8f8f; --hair:#dcdcdc; --pad:rgba(255,255,255,.76); }
+  :root.night { color-scheme: dark; --paper:#0e0e0e; --ink:#ededed; --soft:#8a8a8a; --hair:#3a3a3a; --pad:rgba(14,14,14,.72); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--paper); color: var(--ink);
+    font-family: "Courier New", Courier, monospace;
+    overflow: hidden; overscroll-behavior: none;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    transition: background-color .3s ease, color .3s ease;
+  }
+  #wrap {
+    position: relative; width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #shell { position: relative; overflow: hidden; background: var(--paper); transition: background-color .3s ease; box-shadow: 0 0 0 1px var(--hair); }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; touch-action: none; }
+
+  /* the chips ride on the game itself, not on the page */
+  #topbar { position: absolute; top: max(5px, 1.1vmin); right: max(6px, 1.4vmin); display: flex; gap: min(7px, .9vmin); z-index: 3; }
+  .chip {
+    font: 700 clamp(9px, calc(var(--u, 300px) * .040), 13px)/1 "Courier New", Courier, monospace; letter-spacing: .07em;
+    color: var(--soft); background: var(--paper); border: 1px solid var(--hair); border-radius: 999px;
+    padding: clamp(4px, calc(var(--u, 300px) * .022), 7px) clamp(7px, calc(var(--u, 300px) * .034), 12px);
+    cursor: pointer; touch-action: manipulation;
+    transition: background-color .3s ease, color .3s ease, border-color .3s ease;
+  }
+  .chip:active { color: var(--ink); border-color: var(--soft); }
+  .chip.off { opacity: .4; }
+  .chip[hidden] { display: none; }
+  /* the install chip only exists once the browser says the app is installable */
+  #bInstall { border-color: #2aa9b8; color: #1d7f8b; }
+  :root.night #bInstall { border-color: #57dfec; color: #57dfec; }
+
+  /* A single responsive bar pinned to the bottom of the game box: six equal
+     buttons that live in the empty strip below the ground line, so they never
+     cover the road. Every size is a fraction of --u (the on-screen game
+     height), so the bar scales with the canvas instead of drifting off it. */
+  #pad {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: calc(var(--u, 300px) * .155);
+    display: none; align-items: stretch; gap: calc(var(--u, 300px) * .011);
+    padding: calc(var(--u, 300px) * .013); pointer-events: none; z-index: 2;
+  }
+  body.touch #pad { display: flex; }
+  /* a modal owns the screen: get the buttons out from under it */
+  body.modal #pad { opacity: 0; pointer-events: none; }
+  body.modal #pad .btn { pointer-events: none; }
+  #pad, .btn { transition: opacity .16s ease, background-color .3s ease, color .3s ease, border-color .3s ease, transform .07s ease; }
+  .btn {
+    position: relative; flex: 1 1 0; min-width: 0; pointer-events: auto;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    font: 700 clamp(8px, calc(var(--u, 300px) * .024), 13px)/1.02 "Courier New", Courier, monospace; letter-spacing: .02em;
+    color: var(--ink); background: var(--pad);
+    border: 2px solid var(--ink); border-radius: 999px;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    white-space: nowrap; overflow: hidden;
+  }
+  .btn.on { background: var(--ink); color: var(--paper); transform: scale(.94); }
+  .btn.dim { opacity: .38; }
+  /* JUMP is the one control you cannot play without, so it is the widest key on
+     the bar and the only one whose face is already filled. */
+  #bJump { flex: 1.9 1 0; border-width: 3px; background: var(--ink); color: var(--paper); font-size: clamp(9px, calc(var(--u, 300px) * .027), 14px); }
+  #bJump.on { background: var(--paper); color: var(--ink); }
+  #bPro {
+    border-color: #d9a520; color: #a87a10; background: #fffaea;
+    box-shadow: 0 0 0 1px rgba(217,165,32,.3), 0 0 12px rgba(217,165,32,.45);
+    animation: proGlow 1.7s ease-in-out infinite;
+  }
+  :root.night #bPro { color: #e3ba4c; border-color: #8a6a1c; background: #221b09; }
+  #bPro.active { animation: none; color: #fff6d8; border-color: #d9a520; background: #6b4f0d; }
+  @keyframes proGlow {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(217,165,32,.28), 0 0 8px rgba(217,165,32,.35); }
+    50%      { box-shadow: 0 0 0 1px rgba(217,165,32,.6),  0 0 20px rgba(217,165,32,.8); }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="shell">
+    <canvas id="game" width="768" height="432"></canvas>
+
+    <div id="topbar">
+      <div class="chip" id="bInstall" role="button" tabindex="-1" hidden aria-label="Install DINO.EXE as an app">⬇ INSTALL</div>
+      <div class="chip" id="bPro" role="button" tabindex="-1" aria-label="Open the DINO PRO pass">👑 GO PRO</div>
+      <div class="chip" id="bPause" role="button" tabindex="-1">PAUSE</div>
+      <div class="chip" id="bSound" role="button" tabindex="-1">SOUND</div>
+    </div>
+
+    <div id="pad">
+      <div class="btn" id="bGrind" role="button" tabindex="-1" aria-label="Hold to slide or rail-grind a cactus">↓ GRIND</div>
+      <div class="btn" id="bSlow" role="button" tabindex="-1" aria-label="Bullet time">SLOW</div>
+      <div class="btn" id="bParry" role="button" tabindex="-1" aria-label="Timed parry, double-tap for the Laser Roar">PARRY</div>
+      <div class="btn" id="bRocket" role="button" tabindex="-1" aria-label="Fire a rocket">ROCKET</div>
+      <div class="btn" id="bHook" role="button" tabindex="-1" aria-label="Grapple up to a cloud or pterodactyl">HOOK</div>
+      <div class="btn" id="bRide" role="button" tabindex="-1" aria-label="Deploy or stow the hoverboard">RIDE</div>
+      <div class="btn" id="bJump" role="button" tabindex="-1" aria-label="Jump — tap again in the air to backflip">JUMP</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   DINO.EXE — "Buffering Run"
+   A single-file parody of the Chrome offline T-Rex runner.
+
+   - Sprite art is the real thing: rect tables traced 1:1 from the official
+     Chromium offline sprite sheet (T-Rex 44x47, ducking 55x25, cacti, cloud,
+     pterodactyl).
+   - Physics follows Chrome's own numbers: jump velocity 10 + speed/10, gravity
+     0.6 per 60Hz frame, and a deliberately unhurried speed curve — a 4.4 walk
+     held for the first 10,500m, then a smoothstep up to 9.6 by the tower.
+   - Touch: a responsive six-button bar below the road (↓ GRIND, SLOW, PARRY,
+     ROCKET, HOOK, RIDE), jumping on a tap of the field, plus swipe up / swipe
+     down.  The run is a 100,000m journey with five boss gates, a checkpoint
+     every 10,000m and a tower at the finish line.
+   Pure white paper, a single #535353 ink, no libraries, no build step.  The
+   page also ships a manifest and a service worker, so the same file installs
+   as an app and can be wrapped into an Android APK (see ANDROID.md).
+   ========================================================================== */
+
+/* ------------------------------- helpers ---------------------------------- */
+const WW = 384, WH = 216, GROUND = WH - 56, STEP = 1000 / 60;
+/* Day is Chrome's white paper + one ink.  Night is the same world inverted;
+   the two palettes are cross-faded per frame so the sky change is smooth.  */
+const DAYC = { paper: "#ffffff", ink: "#535353", soft: "#8f8f8f", faint: "#c9c9c9", pebble: "#c4c4c4", cloud: "#c8c8c8", star: "#ffffff", gold: "#c39a24", cyan: "#2aa9b8", red: "#c4382c", pale: "#e7cf88" };
+const NIGHTC = { paper: "#0e0e0e", ink: "#ededed", soft: "#8a8a8a", faint: "#5f5f5f", pebble: "#6b6b6b", cloud: "#0e0e0e", star: "#dcdcdc", gold: "#e3ba4c", cyan: "#57dfec", red: "#f2564a", pale: "#f5e2ae" };
+/* Chrome's own incognito grey, #202124, with the dino drawn in near-white */
+const INCOG = { paper: "#202124", ink: "#e8eaed", soft: "#9aa0a6", faint: "#3c4043", pebble: "#3c4043", cloud: "#202124", star: "#5f6368", gold: "#e3ba4c", cyan: "#57dfec", red: "#f2564a", pale: "#f5e2ae" };
+let PAPER = DAYC.paper, INK = DAYC.ink, SOFT = DAYC.soft, FAINT = DAYC.faint,
+    PEBBLE = DAYC.pebble, CLOUD = DAYC.cloud, STAR = DAYC.star,
+    GOLD = DAYC.gold, CYAN = DAYC.cyan, RED = DAYC.red, PALE = DAYC.pale;
+/* 0 = the scene ink, 1 gold, 2 cyan, 3 red, 4 paper, 5 pale gold.  Skin
+   accessories pick from this so a hat, a visor and a crown can be coloured
+   while the dino itself stays exactly the Chrome sprite. */
+const ACCENT = [null, DAYC.gold, DAYC.cyan, DAYC.red, DAYC.paper, DAYC.pale];
+function mixHex(a, b, t) {
+  if (t <= 0) return a;
+  if (t >= 1) return b;
+  const p = c => [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+  const A = p(a), B = p(b), h = v => Math.round(v).toString(16).padStart(2, "0");
+  return "#" + h(A[0] + (B[0] - A[0]) * t) + h(A[1] + (B[1] - A[1]) * t) + h(A[2] + (B[2] - A[2]) * t);
+}
+function applyNight(t) {
+  /* incognito overrides the sky entirely: Chrome's dark grey, whatever the hour */
+  const on = P.spy > 0;
+  const pick2 = k => on ? INCOG[k] : mixHex(DAYC[k], NIGHTC[k], t);
+  PAPER = pick2("paper"); INK = pick2("ink"); SOFT = pick2("soft"); FAINT = pick2("faint");
+  PEBBLE = pick2("pebble"); CLOUD = pick2("cloud"); STAR = pick2("star");
+  GOLD = mixHex(DAYC.gold, NIGHTC.gold, t);
+  CYAN = mixHex(DAYC.cyan, NIGHTC.cyan, t);
+  RED = mixHex(DAYC.red, NIGHTC.red, t);
+  PALE = mixHex(DAYC.pale, NIGHTC.pale, t);
+  ACCENT[1] = GOLD; ACCENT[2] = CYAN; ACCENT[3] = RED; ACCENT[4] = PAPER; ACCENT[5] = PALE;
+}
+const FONT = '"Courier New", Courier, monospace';
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const rnd = (a = 1, b = 0) => b + Math.random() * (a - b);
+const ri = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+const pick = a => a[(Math.random() * a.length) | 0];
+
+/* --------------------------- the real sprite art ---------------------------
+   [width, height, frame, frame, ...]; a frame is solid-ink runs "x,y,w,h;".  */
+const ART = {
+  idle:    [40, 43, "22,0,16,3;20,2,2,41;38,2,2,9;22,3,2,30;26,3,12,8;24,5,2,26;26,11,4,4;30,13,6,2;0,15,2,12;18,15,2,22;26,15,2,13;15,17,3,18;2,19,2,10;12,19,3,18;28,19,4,2;4,21,2,10;10,21,2,22;30,21,2,2;6,23,4,10;8,33,2,2;15,35,1,2;12,37,2,2;12,41,2,2;22,41,2,2"],
+  blink:   [40, 43, "22,0,16,11;20,2,2,41;38,2,2,9;22,11,8,4;30,13,6,2;0,15,2,12;18,15,2,22;22,15,6,13;15,17,3,18;2,19,2,10;12,19,3,18;28,19,4,2;4,21,2,10;10,21,2,22;30,21,2,2;6,23,4,10;22,28,4,3;22,31,2,2;8,33,2,2;15,35,1,2;12,37,2,2;12,41,2,2;22,41,2,2"],
+  run1:    [40, 43, "22,0,16,3;20,2,2,35;38,2,2,9;22,3,2,30;26,3,12,8;24,5,2,26;26,11,4,4;30,13,6,2;0,15,2,12;18,15,2,20;26,15,2,13;15,17,3,18;2,19,2,10;12,19,3,18;28,19,4,2;4,21,2,10;10,21,2,22;30,21,2,2;6,23,4,10;8,33,2,2;15,35,1,2;22,35,3,2;12,37,2,2;12,41,2,2"],
+  run2:    [40, 43, "22,0,16,3;20,2,2,41;38,2,2,9;22,3,2,30;26,3,12,8;24,5,2,26;26,11,4,4;30,13,6,2;0,15,2,12;18,15,2,22;26,15,2,13;15,17,3,18;2,19,2,10;12,19,3,16;28,19,4,2;4,21,2,10;10,21,2,16;30,21,2,2;6,23,4,10;8,33,2,2;12,35,2,4;14,37,2,2;22,41,2,2"],
+  crash:   [40, 43, "22,0,16,3;20,2,2,41;38,2,2,11;22,3,2,30;28,3,10,10;25,4,2,2;24,7,4,21;28,13,8,2;0,15,2,12;18,15,2,22;15,17,3,18;2,19,2,10;12,19,3,18;28,19,4,2;4,21,2,10;10,21,2,22;30,21,2,2;6,23,4,10;24,28,2,3;8,33,2,2;15,35,1,2;12,37,2,2;12,41,2,2;22,41,2,2"],
+  duck:    [55, 25, "1,0,2,6;38,1,16,3;3,2,4,6;15,2,17,15;36,3,2,11;54,3,1,9;7,4,8,8;32,4,4,10;38,4,2,12;42,4,12,8;40,6,2,10;5,8,2,2;9,12,6,2;42,12,4,4;11,14,4,2;32,14,2,3;46,14,6,2;13,16,2,2;15,17,10,1;30,17,2,4;12,18,2,4;18,18,6,2;32,19,2,2;14,20,2,2;18,20,4,2;18,22,2,3;20,24,2,1",
+               "0,0,2,6;37,1,16,3;2,2,4,6;14,2,17,15;35,3,2,11;53,3,2,9;6,4,8,8;31,4,4,10;37,4,2,12;41,4,12,8;39,6,2,10;4,8,2,2;8,12,6,2;41,12,4,4;10,14,4,2;31,14,2,3;45,14,6,2;12,16,2,6;14,17,10,1;29,17,2,4;11,18,1,7;14,18,3,2;21,18,5,2;31,19,2,2;14,20,1,2;12,22,1,3;13,24,2,1"],
+  cactus1: [15, 33, "6,0,3,33;5,1,1,32;9,1,1,32;13,4,1,13;12,5,1,13;14,5,1,11;1,8,1,13;0,9,1,11;2,9,1,13;10,15,2,3;3,19,2,3"],
+  cactus2: [23, 48, "9,0,5,46;8,1,1,45;14,1,1,45;19,10,3,17;18,11,1,19;22,11,1,15;1,12,3,17;0,13,1,15;4,13,1,18;5,26,3,5;15,26,3,4"],
+  ptero:   [42, 36, "8,6,4,10;6,8,2,8;4,10,2,6;12,10,2,8;2,12,2,4;0,14,2,2;14,14,14,6;28,16,2,10;30,18,12,2;16,20,12,6;30,20,6,4;36,22,4,2;30,24,4,2;16,26,8,2;16,28,6,2;16,30,4,4;16,34,2,2",
+              "14,0,2,6;16,2,2,20;18,4,2,20;8,6,4,10;20,6,2,20;6,8,2,8;22,8,2,18;4,10,2,6;12,10,2,8;24,10,2,16;2,12,2,4;26,12,2,14;0,14,2,2;14,14,2,6;28,16,2,10;30,18,12,2;30,20,6,4;36,22,4,2;30,24,4,2"],
+  cloud:   [46, 13, "25,0,4,1;20,1,6,1;28,1,3,1;19,2,2,1;30,2,2,1;17,3,3,1;31,3,1,3;17,4,1,3;32,4,3,1;34,5,6,1;14,6,3,1;39,6,1,2;13,7,2,1;40,7,3,1;6,8,8,1;42,8,1,2;5,9,2,1;43,9,2,1;5,10,1,2;1,11,2,1;45,11,1,2;0,12,2,1;10,12,35,1"],
+  star:    [5, 5, "2,0,1,1;1,1,3,1;0,2,5,1;1,3,3,1;2,4,1,1"],
+  wifi:    [11, 8, "3,0,5,1;2,1,1,1;8,1,1,1;1,2,9,1;0,3,1,1;10,3,1,1;2,4,1,1;8,4,1,1;0,5,11,1;1,6,1,1;9,6,1,1;5,7,1,1"],
+  rocket:  [13, 9, "3,1,3,1;2,2,4,1;4,2,6,1;4,3,3,3;9,3,1,3;10,3,3,3;2,6,4,1;3,7,3,1;4,6,6,1;0,3,2,3"],
+  /* the 10,000m finish line: a lattice mast under a signal dome */
+  tower:   [40, 104, "14,0,12,2;11,2,18,2;8,4,24,2;5,6,30,2;2,8,36,2;0,10,2,10;38,10,2,10;0,20,40,2;18,22,4,82;15,32,2,2;23,32,2,2;14,44,2,2;24,44,2,2;13,56,2,2;25,56,2,2;12,68,2,2;26,68,2,2;15,80,2,2;23,80,2,2;16,92,2,2;24,92,2,2;10,100,20,4;6,102,8,2;26,102,8,2"],
+  /* the mid-game boss: a chunky Wi-Fi router with two antennas and a lit face */
+  router:  [56, 40, "8,0,2,10;46,0,2,10;5,2,3,2;49,2,3,2;4,3,2,7;50,3,2,7;0,10,56,30;0,10,56,3;0,37,56,3;3,13,2,24;51,13,2,24;8,15,40,1,4;8,19,40,1,4;34,24,14,9,4;36,26,10,5,4;40,28,2,2,2;44,28,2,2,2;38,30,10,1,2;9,24,3,4,3;15,24,3,4,3;21,24,3,4,0;27,24,3,4,0;6,37,6,3;44,37,6,3"],
+  /* a red Wi-Fi energy wave */
+  wave:    [18, 9, "0,0,18,3;3,3,12,3;6,6,6,3"],
+  /* boss 3: a blocky, glitching golem with a slab head and heavy legs */
+  golem:   [56, 76, "0,0,56,8;2,8,52,4;8,12,40,6;10,10,8,4,4;30,10,8,4,2;34,12,3,3,3;0,22,56,26;0,22,56,3;0,45,56,3;10,26,36,2,4;10,31,36,2,4;10,40,36,2,4;4,26,5,18;47,26,5,18;0,48,10,28;46,48,10,28;8,72,14,4;34,72,14,4;6,30,2,6,3;15,35,2,8,3;41,28,2,6,3;27,37,2,8,2"],
+  /* the final boss: a jagged rock on a fireball tail */
+  meteor:  [48, 50, "18,16,18,22;14,20,26,14;20,12,14,5;22,38,14,5;10,28,30,8;15,43,20,4;4,20,10,9;0,26,13,7;3,33,10,6;7,39,8,5;20,20,5,4,4;28,25,6,4,4;22,32,4,4,4"],
+
+  /* ---- the hoverboard: a long deck with two glowing thruster pods ---- */
+  board:   [46, 10, "2,2,42,3;0,5,46,2;5,7,10,2;31,7,10,2;2,7,2,2;42,7,2,2"],
+  /* its two hover jets, drawn live under the deck so they can flicker */
+  jet:     [8, 7, "3,0,2,7;1,2,6,2;0,5,8,1"],
+  /* ---- the incognito spy hat: a brimmed fedora with a dark band ---- */
+  spyhat:  [26, 12, "7,0,12,2;5,2,16,2;4,4,18,2;3,6,20,3;1,9,24,2;6,6,14,2,4;4,4,18,1,4"],
+  /* ---- the sunglasses, worn over the eye notch ---- */
+  shades:  [22, 8, "0,2,9,4;13,2,9,4;9,3,4,1;0,2,9,1;13,2,9,1;3,4,3,1,4;16,4,3,1,4"],
+  /* ---- pickups: a board silhouette and a hat-and-shades combo ---- */
+  pkBoard: [26, 14, "0,9,26,3;4,6,18,3;7,3,12,2;9,0,8,2;3,12,5,2;18,12,5,2"],
+  pkSpy:   [24, 16, "6,0,12,2;4,2,16,2;3,4,18,2;1,7,22,2;6,4,12,2,4;0,10,10,4;14,10,10,4;4,12,4,2,4;16,12,4,2,4"]
+};
+const SPR = {};
+for (const k in ART) {
+  const a = ART[k];
+  SPR[k] = { w: a[0], h: a[1], f: a.slice(2).map(s => s.split(";").map(t => { const p = t.split(","); return [+p[0], +p[1], +p[2], +p[3], p[4] ? +p[4] : 0]; })) };
+}
+
+/* ------------------------------- skins -------------------------------------
+   The dino itself is never re-drawn: each skin is the untouched Chrome frame
+   with its hat / visor / headband stamped on in head space, so running, ducking
+   and crashing all keep working and the backflip still rotates as one sprite. */
+const SKIN_HEAD = { stand: [20, 0], duck: [35, 1] };
+/* Accessory rects are stamped in head space, then the head offset for the pose
+   is added: [20,0] standing, [35,1] ducking.  The monocle is a 7x6 gold ring
+   around the eye notch (x24-25, y3-4 standing; x39-40, y4-5 ducking) with a
+   chain down the cheek.  The antenna stem runs past y0 so it always meets the
+   skull in both poses, and the crown sits on top of the head so the eye stays
+   open.  The Golden Dino's aura is animated, so it is drawn live in drawDino()
+   rather than stamped into the frame. */
+const ACC_GENTLEMAN = [
+  [6, -9, 8, 9, 0], [3, -2, 14, 2, 0], [7, -8, 6, 7, 4], [4, -1, 12, 1, 4], [7, -3, 6, 1, 1],
+  [2, 1, 7, 1, 1], [2, 2, 1, 5, 1], [8, 2, 1, 5, 1], [2, 6, 7, 1, 1], [4, 7, 1, 2, 1], [4, 9, 1, 2, 1]
+];
+const ACC_CYBER = [
+  [2, 3, 14, 4, 2], [5, 4, 8, 1, 4], [0, 7, 2, 2, 2], [17, 7, 2, 2, 2], [10, -4, 1, 5, 0], [9, -5, 3, 3, 2]
+];
+const ACC_GOLDEN = [
+  [1, -3, 16, 3, 1], [1, -8, 4, 5, 1], [6, -11, 5, 8, 1], [13, -8, 4, 5, 1],
+  [2, -9, 2, 1, 5], [7, -12, 3, 1, 5], [14, -9, 2, 1, 5], [1, -3, 16, 1, 5], [8, -3, 2, 3, 5]
+];
+/* --- the four extra wardrobes ---------------------------------------------
+   Same rule as the first three: the eye notch (head-space x4-5 y3-4) is only
+   covered by the two accessories meant to cover it — the eyepatch and the
+   visor — and every hat lands on the skull (its top is head-space y0), so
+   running, ducking and crashing all still read. */
+const ACC_PIRATE = [                                   /* bandana, eyepatch, hoop */
+  [0, -3, 19, 3, 3], [1, -4, 17, 1, 3], [0, -2, 4, 1, 3], [0, 0, 2, 2, 3],
+  [2, 2, 7, 5, 4], [2, 2, 7, 1, 0], [2, 6, 7, 1, 0], [9, 3, 10, 1, 0],
+  [16, 2, 3, 1, 1], [17, 2, 1, 4, 1]
+];
+const ACC_ASTRO = [                                    /* helmet dome, visor, aerial */
+  [1, -9, 18, 3, 0],                                   /* the dome cap,      y -9..-7 */
+  [0, -7, 1, 6, 0], [19, -7, 1, 6, 0],                  /* the side rails,    y -7..-2 */
+  [1, -2, 18, 7, 2], [3, -1, 14, 1, 4],                 /* the visor,         y -2.. 4 */
+  [16, -13, 1, 4, 0], [15, -15, 3, 2, 2]                /* the whip aerial,   y-15..-10 */
+];
+const ACC_NINJA = [                                    /* headband, tails, face wrap */
+  [0, 0, 20, 3, 3], [0, 3, 4, 1, 3], [0, 4, 3, 1, 3],
+  [2, 3, 6, 2, 4],
+  [0, 7, 15, 4, 4], [0, 7, 15, 1, 0], [0, 10, 15, 1, 0], [13, 7, 3, 3, 0]
+];
+const ACC_WIZARD = [                                   /* cone hat, star, long beard */
+  [8, -14, 4, 2, 0], [7, -12, 6, 2, 0], [5, -10, 10, 2, 0], [3, -8, 14, 2, 0],
+  [1, -6, 18, 2, 0], [0, -4, 20, 2, 0],
+  [0, -2, 20, 2, 0], [1, -2, 18, 1, 1], [7, -8, 2, 2, 1],
+  /* the beard hangs from under the jaw: the snout points right, so it sits on
+     the front half of the head (head-space x4-16), not the back of the neck */
+  [4, 7, 13, 7, 4], [4, 13, 11, 1, 4], [6, 14, 4, 2, 4]
+];
+const ACC_SAMURAI = [                                 /* kabuto, gold crest, cheek guard */
+  [6, -11, 2, 4, 1], [12, -11, 2, 4, 1],                    /* the horned maedate */
+  [9, -10, 2, 2, 5],                                        /* its pale centre jewel */
+  [2, -8, 16, 6, 3], [2, -8, 16, 1, 0], [3, -7, 14, 1, 0],  /* red bowl, ink seams */
+  [1, -3, 18, 2, 0], [1, -3, 18, 1, 1],                     /* ink brim, gold trim */
+  [2, -2, 2, 4, 3], [16, -2, 2, 4, 3],                      /* red side flaps */
+  [13, 3, 3, 4, 3], [13, 3, 3, 1, 0]                        /* the cheek guard */
+];
+const ACC_COWBOY = [                                   /* wide hat, gold band, bandana */
+  [5, -9, 10, 6, 0], [8, -10, 4, 1, 0],                     /* crown + its dent   y-10..-4 */
+  [0, -3, 20, 3, 0], [3, -3, 14, 1, 0],                     /* wide brim          y -3..-1 */
+  [5, -5, 10, 1, 1],                                        /* the gold band */
+  [1, 7, 18, 3, 3], [1, 7, 18, 1, 0], [1, 9, 18, 1, 0],     /* red bandana, ink rules */
+  [11, 8, 3, 2, 3], [13, 8, 3, 1, 3]                        /* the knot */
+];
+const ACC_VIKING = [                                   /* horned helm + a pale beard */
+  [0, -12, 4, 4, 1], [1, -13, 2, 2, 1],                     /* left horn */
+  [16, -12, 4, 4, 1], [17, -13, 2, 2, 1],                   /* right horn */
+  [2, -8, 16, 6, 0], [2, -8, 16, 1, 1],                     /* ink dome, gold ridge */
+  [1, -3, 18, 2, 1],                                        /* gold rim */
+  [2, -2, 2, 5, 0], [16, -2, 2, 5, 0],                      /* cheek guards */
+  [3, 8, 14, 6, 5], [3, 13, 11, 1, 5], [5, 14, 4, 3, 5]     /* the beard */
+];
+const ACC_PUNK = [                                     /* mohawk + a studded collar */
+  [3, -5, 2, 5, 3], [6, -8, 2, 8, 3], [9, -11, 2, 11, 3],   /* the crest, tallest in the middle */
+  [12, -8, 2, 8, 3], [15, -5, 2, 5, 3], [3, -5, 14, 1, 3],  /* spike row + root */
+  [1, 8, 18, 3, 0], [1, 8, 18, 1, 0],
+  [3, 9, 1, 1, 1], [7, 9, 1, 1, 1], [11, 9, 1, 1, 1], [15, 9, 1, 1, 1],   /* studs */
+  [17, 3, 3, 1, 1], [19, 3, 1, 3, 1]                        /* a gold ear hoop */
+];
+const SKINS = [
+  { id: "classic", name: "CLASSIC DINO", cost: 0, blurb: "THE ORIGINAL", acc: null },
+  { id: "gentleman", name: "GENTLEMAN DINO", cost: 50, blurb: "TOP HAT + MONOCLE", acc: ACC_GENTLEMAN },
+  { id: "cyber", name: "CYBER DINO", cost: 100, blurb: "GLOWING VISOR", acc: ACC_CYBER },
+  { id: "gold", name: "CROWN DINO", cost: 150, blurb: "ROYAL CROWN + AURA", acc: ACC_GOLDEN },
+  { id: "pirate", name: "PIRATE DINO", cost: 200, blurb: "BANDANA + EYEPATCH", acc: ACC_PIRATE },
+  { id: "astro", name: "ASTRO DINO", cost: 250, blurb: "SPACE HELMET", acc: ACC_ASTRO },
+  { id: "ninja", name: "NINJA DINO", cost: 300, blurb: "MASK + HEADBAND", acc: ACC_NINJA },
+  { id: "wizard", name: "WIZARD DINO", cost: 350, blurb: "POINTED HAT + BEARD", acc: ACC_WIZARD },
+  { id: "samurai", name: "SAMURAI DINO", cost: 400, blurb: "RED KABUTO + CREST", acc: ACC_SAMURAI },
+  { id: "cowboy", name: "COWBOY DINO", cost: 450, blurb: "WIDE HAT + BANDANA", acc: ACC_COWBOY },
+  { id: "viking", name: "VIKING DINO", cost: 500, blurb: "HORNED HELM + BEARD", acc: ACC_VIKING },
+  { id: "punk", name: "PUNK DINO", cost: 550, blurb: "MOHAWK + STUD COLLAR", acc: ACC_PUNK }
+];
+/* the shop lays the wardrobe out in a paged grid: two columns of four rows is
+   eight tiles a page, and a page turn costs no panel height at all.  The
+   hoverboard pack always spans the bottom row, on every page. */
+const SHOP_COLS = 2, SHOP_ROWS = 4, SHOP_PER = SHOP_COLS * SHOP_ROWS;
+const shopPages = () => Math.max(1, Math.ceil(SKINS.length / SHOP_PER));
+/* which page the current selection lives on: pure, so nothing can desync.  The
+   hoverboard pack and CLOSE pin themselves to the last page. */
+function shopPage() {
+  const pages = shopPages();
+  if (G.shopSel >= SKINS.length) return pages - 1;
+  return Math.max(0, Math.min(pages - 1, (G.shopSel / SHOP_PER) | 0));
+}
+for (const sk of SKINS) for (const base of ["idle", "blink", "run1", "run2", "crash", "duck"]) {
+  const src = SPR[base];
+  if (!sk.acc) { SPR[sk.id + "_" + base] = src; continue; }
+  const off = base === "duck" ? SKIN_HEAD.duck : SKIN_HEAD.stand;
+  SPR[sk.id + "_" + base] = {
+    w: src.w, h: src.h,
+    f: src.f.map(fr => fr.concat(sk.acc.map(r => [r[0] + off[0], r[1] + off[1], r[2], r[3], r[4]])))
+  };
+}
+const skinIndex = id => Math.max(0, SKINS.findIndex(s => s.id === id));
+function skinSprite(base) { return save.skin + "_" + base; }
+
+/* ------------------------------- storage ---------------------------------- */
+const SAVE_KEY = "dinoexe.save.v2";
+const save = { best: 0, music: true, sound: true, coins: 0, owned: ["classic"], skin: "classic",
+              pro: false, title: "", bestM: 0, champ: 0, cp: null, boards: 0 };
+try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || "{}")); } catch (e) {}
+function sanitiseSave() {
+  const ids = SKINS.map(s => s.id);
+  save.owned = (Array.isArray(save.owned) ? save.owned : []).filter(id => ids.indexOf(id) >= 0);
+  if (save.owned.indexOf("classic") === -1) save.owned.unshift("classic");
+  if (save.pro && save.owned.indexOf("gold") === -1) save.owned.push("gold");
+  if (ids.indexOf(save.skin) === -1 || save.owned.indexOf(save.skin) === -1) save.skin = "classic";
+  save.coins = Math.max(0, save.coins | 0);
+  save.best = Math.max(0, save.best | 0);
+  save.bestM = Math.max(0, save.bestM | 0);
+  save.champ = Math.max(0, save.champ | 0);
+  save.boards = Math.max(0, Math.min(99, save.boards | 0));
+  save.pro = !!save.pro;
+  save.title = typeof save.title === "string" ? save.title.slice(0, 24) : "";
+  if (!save.cp || typeof save.cp.m !== "number") save.cp = null;   /* a checkpoint is a plain snapshot */
+}
+sanitiseSave();
+const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} };
+
+/* --------------------------------- audio ---------------------------------- */
+const Snd = (() => {
+  let ac = null, master = null, bus = null;
+  const init = () => {
+    if (ac) return true;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    try { ac = new AC(); } catch (e) { return false; }
+    master = ac.createGain(); master.gain.value = 0.5; master.connect(ac.destination);
+    bus = ac.createGain(); bus.gain.value = 0.075; bus.connect(master);
+    return true;
+  };
+  const resume = () => { if (ac && ac.state === "suspended") { try { ac.resume(); } catch (e) {} } };
+  function tone(f, dur, type, vol, to, delay) {
+    if (!ac || !save.sound) return;
+    const t = ac.currentTime + (delay || 0), o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || "square";
+    o.frequency.setValueAtTime(f * sfxPitch, t);
+    if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to * sfxPitch), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.002, vol), t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.03);
+  }
+  function noise(dur, freq, type, vol, to, dest) {
+    if (!ac || !save.sound) return;
+    const len = Math.max(1, Math.floor(ac.sampleRate * dur));
+    const buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const s = ac.createBufferSource(); s.buffer = buf;
+    const f = ac.createBiquadFilter(); f.type = type || "bandpass";
+    f.frequency.setValueAtTime(freq || 1200, ac.currentTime);
+    if (to) f.frequency.exponentialRampToValueAtTime(Math.max(40, to), ac.currentTime + dur);
+    const g = ac.createGain(); g.gain.value = vol == null ? 0.2 : vol;
+    s.connect(f); f.connect(g); g.connect(dest || master); s.start();
+  }
+  const sfx = {
+    jump:  () => tone(300, 0.16, "square", 0.16, 720),
+    djump: () => { tone(520, 0.16, "square", 0.15, 1250); noise(0.14, 2400, "highpass", 0.09, 700); },
+    land:  () => noise(0.07, 380, "lowpass", 0.14, 120),
+    point: () => { tone(988, 0.07, "square", 0.13); tone(1319, 0.12, "square", 0.11); },
+    die:   () => { tone(300, 0.5, "sawtooth", 0.2, 60); noise(0.45, 900, "lowpass", 0.2, 100); },
+    grind: () => { noise(0.13, 3200, "bandpass", 0.09, 5200); tone(1300 + Math.random() * 500, 0.05, "square", 0.05); },
+    shoot: () => { tone(900, 0.2, "sawtooth", 0.15, 140); noise(0.14, 1600, "bandpass", 0.12, 300); },
+    boom:  () => { noise(0.4, 800, "lowpass", 0.28, 60); tone(150, 0.3, "sawtooth", 0.18, 40); },
+    parry: () => { tone(1600, 0.14, "square", 0.14, 320); noise(0.22, 5000, "bandpass", 0.16, 400); },
+    coin:  () => { tone(1244, 0.06, "square", 0.11); tone(1864, 0.1, "square", 0.09, 0, 0.05); },
+    ammo:  () => { tone(220, 0.18, "sawtooth", 0.13, 900); noise(0.12, 900, "bandpass", 0.1, 2400); },
+    buy:   () => { tone(660, 0.07, "square", 0.12); tone(880, 0.07, "square", 0.11, 0, 0.07); tone(1320, 0.14, "square", 0.1, 0, 0.14); },
+    deny:  () => tone(170, 0.13, "square", 0.12, 110),
+    click: () => tone(660, 0.05, "square", 0.09),
+    slow:  () => { tone(880, 0.5, "sine", 0.16, 180); tone(440, 0.5, "triangle", 0.1, 90, 0.02); },
+    zap:   () => { tone(320, 0.22, "sawtooth", 0.12, 1500); noise(0.18, 2600, "bandpass", 0.09, 900); },
+    siren: () => { for (let i = 0; i < 4; i++) { tone(440, 0.26, "square", 0.16, 880); tone(880, 0.26, "square", 0.16, 440, 0.28); } },
+    shield: () => { tone(300, 0.5, "triangle", 0.16, 1200); tone(600, 0.4, "sine", 0.12, 1800, 0.05); },
+    pop:   () => { tone(1400, 0.07, "square", 0.1); noise(0.1, 3000, "highpass", 0.1, 1200); },
+    /* hoverboard: a rising whoosh as it powers up, and a soft engine hum that
+       climbs with the speed — the board has to sound like it is working */
+    board:  () => { tone(180, 0.34, "sawtooth", 0.13, 900); noise(0.3, 700, "bandpass", 0.1, 3400); },
+    hum:    (p) => { const k = 1 + (p || 0) * 0.55;
+                     tone(150 * k, 0.1, "sine", 0.05, 190 * k); noise(0.08, 1800 * k, "bandpass", 0.04, 2600 * k); },
+    spin:   () => { for (let i = 0; i < 5; i++) tone(500 + i * 220, 0.06, "square", 0.07, 0, i * 0.05); },
+    smash:  () => { noise(0.3, 1200, "lowpass", 0.24, 120); tone(220, 0.24, "square", 0.13, 60); },
+    /* incognito: a soft shhh, then a quiet shimmer for the ghost clock */
+    spy:    () => { noise(0.34, 5200, "highpass", 0.1, 1400); tone(880, 0.2, "sine", 0.08, 1760); },
+    ghost:  () => { tone(1320, 0.05, "sine", 0.045); tone(1760, 0.05, "sine", 0.035, 0, 0.04); },
+    /* the grappling hook: a quick rope-whizz, then the latch */
+    hook:   () => { tone(190, 0.16, "sawtooth", 0.12, 980); noise(0.14, 2600, "bandpass", 0.08, 5200); tone(660, 0.06, "square", 0.09, 0, 0.14); },
+    /* the Laser Roar: a low growl that sweeps up into the beam */
+    roar:   () => { tone(96, 0.5, "sawtooth", 0.22, 60); tone(180, 0.46, "square", 0.14, 900, 0.03); noise(0.42, 1400, "bandpass", 0.15, 4200); },
+    victory: () => {
+      const n = [523, 659, 784, 1047, 784, 1047, 1319];
+      n.forEach((f, i) => { tone(f, i === n.length - 1 ? 0.6 : 0.15, "square", 0.17, 0, i * 0.13); });
+      tone(131, 0.9, "triangle", 0.14, 262, 0.1); noise(0.5, 5000, "highpass", 0.07, 1400, 0.2);
+    }
+  };
+  /* ---- two loops: a bright day run and a darker night phase ---- */
+  const LOOPS = {
+    /* day: 132bpm walking bass + a bright pentatonic arp, hats on the beat */
+    day: {
+      bpm: 132,
+      bass: [110, 0, 0, 110, 87.3, 0, 0, 87.3, 98, 0, 0, 98, 82.4, 0, 0, 82.4],
+      lead: [440, 523, 659, 523, 392, 494, 587, 494, 440, 523, 659, 880, 659, 587, 494, 440],
+      leadType: "square", leadVol: 0.16, leadDur: 0.1, cut: 0,
+      bassType: "triangle", bassVol: 0.5, bassDur: 0.18, detune: 0,
+      pad: 0, padVol: 0, padDur: 0, padCut: 0, hat: 0.05
+    },
+    /* night: 100bpm, everything an octave down, sparse and lowpassed,
+       with a detuned saw bass and a slow drone sitting under the bar      */
+    night: {
+      bpm: 100,
+      bass: [55, 0, 0, 55, 0, 0, 43.7, 0, 65.4, 0, 0, 0, 0, 49, 0, 36.7],
+      lead: [0, 0, 220, 0, 0, 0, 0, 261.6, 0, 196, 0, 0, 0, 174.6, 0, 0],
+      leadType: "triangle", leadVol: 0.13, leadDur: 0.34, cut: 780,
+      bassType: "sawtooth", bassVol: 0.34, bassDur: 0.42, detune: 0.006,
+      pad: 55, padVol: 0.3, padDur: 2.1, padCut: 340, hat: 0.03
+    }
+  };
+  const mus = { on: false, step: 0, next: 0 };
+  let mode = "day", wantMode = "day", sfxPitch = 1;
+  function sch(f, t, type, vol, dur, cut) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    let tail = g;
+    if (cut) {
+      const lp = ac.createBiquadFilter();
+      lp.type = "lowpass"; lp.frequency.value = cut; lp.Q.value = 0.7;
+      g.connect(lp); tail = lp;
+    }
+    o.connect(g); tail.connect(bus); o.start(t); o.stop(t + dur + 0.03);
+  }
+  function pump() {
+    if (!mus.on || !ac || !save.music || !save.sound) return;
+    if (wantMode !== mode && mus.step % 16 >= 13) { mode = wantMode; mus.step = 0; }  /* change on the bar line */
+    const L = LOOPS[mode];
+    const spb = 60 / L.bpm / 2, horizon = ac.currentTime + 0.3;
+    let guard = 0;
+    while (mus.next < horizon && guard++ < 24) {
+      const t = Math.max(mus.next, ac.currentTime + 0.01), s = mus.step % 16;
+      if (L.bass[s]) {
+        sch(L.bass[s], t, L.bassType, L.bassVol, L.bassDur, 0);
+        if (L.detune) sch(L.bass[s] * (1 + L.detune), t, L.bassType, L.bassVol * 0.5, L.bassDur, 0);
+      }
+      if (L.lead[s]) sch(L.lead[s], t, L.leadType, L.leadVol, L.leadDur, L.cut);
+      if (s === 0 && L.pad) sch(L.pad, t, "sawtooth", L.padVol, L.padDur, L.padCut);
+      if (s % 4 === 0) noise(0.03, 6000, "highpass", L.hat, 0, bus);
+      mus.next += spb; mus.step++;
+    }
+  }
+  const start = () => { if (!init()) return; resume(); mus.on = true; mus.next = ac.currentTime + 0.1; mus.step = 0; };
+  const stop = () => { mus.on = false; };
+  /* night pulls the whole soundscape down: darker loop + lower sfx */
+  const setNight = on => { wantMode = on ? "night" : "day"; sfxPitch = on ? 0.86 : 1; };
+  return {
+    init, resume, pump, start, stop, sfx, setNight,
+    info: () => ({ mode, want: wantMode, bpm: LOOPS[mode].bpm, pitch: sfxPitch, on: mus.on })
+  };
+})();
+
+/* --------------------------------- view ----------------------------------- */
+const wrap = document.getElementById("wrap");
+const shell = document.getElementById("shell");
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+let S = 2, CSS = 2, CW = 768, CH = 432, OX = 0, OY = 0;
+
+function resize() {
+  const vw = Math.max(200, wrap.clientWidth || window.innerWidth || 640);
+  const vh = Math.max(140, wrap.clientHeight || window.innerHeight || 360);
+  /* leave room under the game for the touch pad in portrait, where the 16:9
+     box is much shorter than the screen and the buttons need somewhere to live */
+  const padRoom = touchUI ? Math.min(vh * 0.30, vw * 0.52) : 0;
+  const boxH = Math.max(120, vh - padRoom);
+  const w = Math.min(vw, (boxH * 16) / 9), h = (w * 9) / 16;
+  shell.style.width = w + "px";
+  shell.style.height = h + "px";
+  wrap.style.paddingBottom = padRoom ? padRoom + "px" : "";
+  /* one knob for the whole overlay: every chip and button is a fraction of the
+     on-screen game height, so the pad can never drift off the canvas */
+  shell.style.setProperty("--u", h + "px");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  CW = Math.max(192, Math.round(w * dpr));
+  CH = Math.max(108, Math.round(h * dpr));
+  cv.width = CW; cv.height = CH;
+  S = CW / WW;                                  /* world 384x216 -> device px */
+  CSS = w / WW;                                 /* world -> CSS px, for hit tests */
+  ctx.imageSmoothingEnabled = false;
+  P.x = Math.round(WW * 0.09);
+}
+if (typeof ResizeObserver !== "undefined") { try { new ResizeObserver(resize).observe(wrap); } catch (e) {} }
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+
+/* ------------------------------ draw helpers ------------------------------ */
+function R(x, y, w, h, col) {
+  if (col !== undefined) ctx.fillStyle = col;
+  const x0 = Math.round(x * S + OX), y0 = Math.round(y * S + OY);
+  const x1 = Math.round((x + w) * S + OX), y1 = Math.round((y + h) * S + OY);
+  if (x1 > x0 && y1 > y0) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+}
+function SPT(key, x, y, frame, rot, col, sc) {
+  const s = SPR[key], list = s.f, f = list[((frame | 0) % list.length + list.length) % list.length];
+  const c = col || INK, k = sc || 1;
+  ctx.fillStyle = c;
+  if (rot) {
+    ctx.setTransform(1, 0, 0, 1, OX, OY);
+    ctx.translate((x + s.w / 2) * S, (y + s.h / 2) * S);
+    ctx.rotate(rot);
+    for (const r of f) {
+      ctx.fillStyle = r[4] ? ACCENT[r[4]] : c;
+      ctx.fillRect((r[0] - s.w / 2) * S, (r[1] - s.h / 2) * S, r[2] * S, r[3] * S);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
+  for (const r of f) R(x + r[0] * k, y + r[1] * k, r[2] * k, r[3] * k, r[4] ? ACCENT[r[4]] : c);
+}
+function TXT(s, x, y, size, col, align, sp, weight) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = (weight || 700) + " " + Math.max(5, Math.round(size * S)) + "px " + FONT;
+  ctx.fillStyle = col || INK;
+  ctx.textAlign = align || "left";
+  ctx.textBaseline = "alphabetic";
+  try { ctx.letterSpacing = (sp || 0) * S + "px"; } catch (e) {}
+  ctx.fillText(s, Math.round(x * S), Math.round(y * S));
+  try { ctx.letterSpacing = "0px"; } catch (e) {}
+}
+function TW(s, size, weight) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = (weight || 700) + " " + Math.max(5, Math.round(size * S)) + "px " + FONT;
+  return ctx.measureText(s).width / S;
+}
+
+/* -------------------------------- game state ------------------------------ */
+const CFG = {
+  SPEED: 4.4,         /* starting speed: an easy, unhurried first stretch    */
+  RAMP: 400000,       /* distance over which the run eases up to MAX_SPEED   */
+  EASE_IN: 42000,     /* world units held at walking pace before the ramp     */
+  MAX_SPEED: 9.6,
+  GRAVITY: 0.6,       /* Chrome's gravity, per frame                        */
+  FAST_GRAVITY: 2.4,  /* holding slide in the air slams you down            */
+  JUMP: 10,           /* jump velocity = JUMP + speed / 10  (Chrome)        */
+  GAPK: 1.15,         /* gap scale: our window is 384 wide, Chrome's is 600 */
+  RESTART_DELAY: 380,
+  NIGHT_AT: 500,      /* every 500 points the sky flips to night for a phase */
+  NIGHT_FADE: 22,     /* frames to cross-fade day <-> night                   */
+  AMMO_MAX: 9,        /* how many rockets can be carried                     */
+  ROCKET_EVERY: 3,    /* every Nth floating pickup is a rocket, not coins    */
+  FINISH: 100000,     /* metres: the run is a journey, not an endless road   */
+  M_PER_UNIT: 1 / 4,  /* world units -> metres (400,000 units = 100,000m)    */
+  CHECKPOINT: 10000,  /* a checkpoint is banked every 10,000m                 */
+  TOWER_X: 310,       /* the tower parks here, clear of the victory card     */
+  BOSS_WAVE: 3.1,     /* how fast a boss projectile travels left            */
+  WIN_COINS: 1000,    /* surviving 100,000m pays 1,000 bonus coins          */
+  SLOW_MS: 2000,      /* bullet time lasts 2s                                */
+  SLOW_CD: 6000,      /* and then needs 6s to recharge                      */
+  SLOW_SCALE: 0.35,   /* to 35% speed while it lasts                         */
+  PRO_ROCKETS: 3,     /* PRO starts every run with three free rockets        */
+  PRO_COINS: 2,       /* PRO pays double for every Wi-Fi coin                */
+  PRO_REVIVES: 2,     /* ...and two golden shields to spend on crashes       */
+  PRO_MAGNET: 78,     /* ...and coins this close are reeled in               */
+  MAG_PULL: 4.6,      /* how fast the magnet reels a coin in                  */
+  PRO_CD: 0.5,        /* ...and the limited weapons recharge twice as fast   */
+  PRO_SPY: 1.5,       /* ...and Incognito lasts half again as long           */
+  HOVER_H: 14,        /* how high the hoverboard floats the dino            */
+  HOVER_SPIN: 30,     /* frames for one 360 kickflip                        */
+  HOVER_K: 0.18,      /* the suspension's spring: how hard it pushes back   */
+  HOVER_D: 0.5,       /* ...and its damper, so it settles instead of ringing */
+  HOVER_HIT: 2.4,     /* the kick the springs take when the dino lands       */
+  BOARD_PACK: 3,      /* a shop pack is three boards                         */
+  BOARD_COST: 30,     /* ...for 30 Wi-Fi coins                               */
+  BOARD_EVERY: 11,    /* a board pickup spawns roughly this often            */
+  SPY_MS: 6000,       /* incognito lasts six seconds                         */
+  SPY_EVERY: 13,      /* the spy hat spawns roughly this often               */
+  CLOUD_MAX: 7,       /* how many clouds may share the sky at once           */
+  CLOUD_MIN_Y: 40,    /* the cloud band: low enough to hook, high enough    */
+  CLOUD_MAX_Y: 90,    /*   clear of the road (the hook reaches y <= 124)     */
+  CLOUD_MIN_GAP: 90,  /* frames between clouds; the floor of the spawn rate  */
+  CLOUD_MAX_GAP: 240,
+  HOOK_MS: 3000,      /* the grappling hook swings you for three seconds     */
+  HOOK_ARC: 74,       /* how high the pendulum carries the dino              */
+  HOOK_PTS: 60,       /* a clean grapple detach pays this                    */
+  LASER_MS: 900,      /* the Laser Roar beam lingers this long               */
+  LASER_CD: 6000,     /* and the roar is a limited weapon: this long to recharge */
+  COMBO_HIT: 5,       /* five kills in a row sets off the Laser Roar         */
+  COMBO_MS: 2600,     /* kills must land within this window to chain         */
+  BOX_AMMO: 3         /* a [ROCKET] box carries three rockets                */
+};
+const G = {
+  state: "ready", t: 0, frame: 0, blink: 0, distance: 0, score: 0, speed: 0, spd: 0,
+  obs: [], shots: [], parts: [], clouds: [],
+  cool: 0, flash: 0, flashPeak: 0, shakeT: 0, shakeM: 0, cloudT: 0,
+  night: false, nightMix: 0, nightPhase: 0, stars: [],
+  ammo: 0, items: [], bonus: 0, itemT: 150, itemN: 0, coinN: 0,
+  shopSel: -1, shopMsg: "", shopMsgT: 0, shopBack: "ready",
+  restartAt: 0, reason: "", newBest: false,
+  meters: 0, road: 0, slowT: 0, slowCd: 0, revive: 0, revived: false,
+  boss: null, bossIdx: 0, bosses: [], warn: 0, waves: [],
+  tower: null, winT: 0, toast: "", toastT: 0, proBack: "ready", proMsg: "", proMsgT: 0,
+  cpN: 0, cpFlash: 0, lastParry: -1,
+  combo: 0, comboT: 0, beamT: 0, beamCd: 0, beamY: 0, arc: []
+};
+const P = { x: 35, y: 0, vy: 0, air: 0, flip: -1, duck: false, dead: false, grind: null, shield: 0,
+            board: 0, boardT: 0, spin: 0, spy: 0, spyT: 0, spyMax: 0, ghost: 0, sink: 0, hook: null, hookT: 0,
+            bob: 0, bobV: 0 };
+
+/* one repeating strip of ground pebbles, drawn twice so it scrolls forever */
+const STRIP = 900, PEBS = [];
+(() => { let x = 8; while (x < STRIP) { PEBS.push([x, ri(6, 15), ri(3, 12), ri(1, 2)]); x += ri(28, 84); } })();
+
+/* --------------------------------- input ---------------------------------- */
+const held = { keySlide: false, padSlide: false, swipe: false, swipeUntil: 0 };
+const slideHeld = () => held.keySlide || held.padSlide || (held.swipe && G.t < held.swipeUntil);
+const jumpV = () => CFG.JUMP + G.speed / 10;
+
+function start() {
+  G.state = "run"; G.t = 0; G.frame = 0; G.blink = 0; G.distance = 0; G.score = 0;
+  G.speed = CFG.SPEED; G.obs.length = 0; G.shots.length = 0; G.parts.length = 0;
+  G.clouds.length = 0; G.cool = 0; G.flash = 0; G.flashPeak = 0; G.shakeT = 0; G.cloudT = 40;
+  G.nightPhase = 0; setNight(false); G.stars.length = 0;
+  G.bonus = 0; G.items.length = 0; G.itemN = 0; G.coinN = 0; G.itemT = 150; G.shopSel = -1;
+  G.newBest = false; G.reason = "";
+  G.road = 0; G.meters = 0; G.spd = CFG.SPEED; G.slowT = 0; G.slowCd = 0;
+  G.ammo = save.pro ? CFG.PRO_ROCKETS : 0;           /* PRO: three free rockets */
+  G.revive = save.pro ? CFG.PRO_REVIVES : 0; G.revived = false;   /* PRO: two golden shields */
+  G.boss = null; G.bossIdx = 0; G.bosses = []; G.warn = 0; G.waves.length = 0;
+  G.tower = null; G.winT = 0; G.toast = ""; G.toastT = 0; G.cpN = 0; G.cpFlash = 0;
+  G.combo = 0; G.comboT = 0; G.beamT = 0; G.beamCd = 0; G.beamY = 0; G.lastParry = -1; G.arc.length = 0;
+  P.x = Math.round(WW * 0.09);
+  P.y = 0; P.vy = 0; P.air = 0; P.flip = -1; P.duck = false; P.dead = false; P.grind = null;
+  P.shield = 0; P.spin = 0; P.spy = 0; P.spyT = 0; P.ghost = 0; P.sink = 0;
+  P.bob = 0; P.bobV = 0;                            /* the suspension, level */
+  P.hook = null; P.hookT = 0;
+  /* PRO starts every run with one free golden hoverboard already deployed */
+  P.board = save.pro ? 1 : 0; P.boardT = 0;
+  Snd.init(); Snd.resume(); Snd.start();
+}
+const REASONS = [
+  "Error 404: dino not found",
+  "Connection lost while buffering",
+  "Your internet fell over",
+  "Signal dropped at 3G",
+  "The server ate your run"
+];
+function gameOver(reason) {
+  if (P.dead) return;
+  if (G.revive > 0) { revive(); return; }             /* PRO: the golden shield */
+  P.dead = true; P.duck = false; P.grind = null; P.flip = -1; P.shield = 0;
+  P.hook = null; P.hookT = 0; G.combo = 0; G.comboT = 0;
+  G.state = "over";
+  G.speed = 0; G.spd = 0; G.reason = reason; G.restartAt = G.t + CFG.RESTART_DELAY;
+  shake(7, 22); Snd.sfx.die(); Snd.stop();
+  if (navigator.vibrate) { try { navigator.vibrate(40); } catch (e) {} }
+  if (G.score > save.best) { save.best = G.score; G.newBest = true; persist(); }
+}
+/* one free PRO revive: a golden energy shield blows the danger away */
+function revive() {
+  G.revive--; G.revived = true;
+  for (const o of G.obs) if (!o.dead && o.x + o.w > P.x - 40 && o.x < P.x + 200) {
+    o.dead = true; o.vx = 2; o.vy = -4;
+    burst(o.x + o.w / 2, o.y + o.h / 2, 14, 2.6, 22, GOLD);
+  }
+  for (const w of G.waves) if (!w.dead && w.x < P.x + 220) { w.dead = true; w.vx = 2; w.vy = -3; }
+  P.y = 46; P.vy = jumpV() * 0.9; P.air = 1; P.flip = 0; P.dead = false; P.shield = 1500;
+  G.bonus += 100; G.flash = 24; shake(8, 30); Snd.sfx.shield();
+  toast("GOLDEN SHIELD!  +100");
+}
+/* the 100,000m finish line: confetti, fireworks and a certified legend */
+function win() {
+  if (G.state !== "run") return;
+  G.state = "win"; G.speed = 0; G.spd = 0; G.meters = CFG.FINISH;
+  G.tower = WW + 40; G.winT = 0; G.boss = null; G.waves.length = 0;
+  G.restartAt = G.t + CFG.RESTART_DELAY;
+  const first = save.owned.indexOf("gold") === -1;
+  save.coins += CFG.WIN_COINS; save.title = "CERTIFIED LEGEND"; save.champ++;
+  if (first) save.owned.push("gold");           /* the exclusive reward */
+  if (G.meters > save.bestM) save.bestM = G.meters;
+  if (G.score > save.best) { save.best = G.score; G.newBest = true; }
+  clearCheckpoint(); persist(); Snd.sfx.victory(); Snd.stop();
+  confetti(150);
+  for (let i = 0; i < 5; i++) firework();
+}
+function toast(m) { G.toast = m; G.toastT = 130; }
+function firework() {
+  const x = rnd(WW - 30, 20), y = rnd(100, 14), col = pick([GOLD, CYAN, RED, PALE, INK]);
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * TAU, sp = rnd(3.6, 1.3);
+    G.parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: ri(30, 58), sz: ri(1, 2), col });
+  }
+  Snd.sfx.pop();
+}
+function winUpdate() {
+  G.winT++;
+  if (G.tower !== null) {
+    if (G.tower > CFG.TOWER_X) G.tower -= 3.4;          /* roll in, then park */
+    if (G.frame % 7 === 0) burst(G.tower + 20, GROUND - 100, 2, 1.4, 30, CYAN);
+  }
+  if (G.frame % 24 === 0) firework();
+  if (G.frame % 9 === 0) confetti(6);
+}
+/* ------------------------------- checkpoints ------------------------------- */
+/* a checkpoint is a plain snapshot of the run in localStorage: die and you pick
+   the journey back up from the last 10,000m mark instead of losing all of it. */
+function writeCheckpoint() {
+  save.cp = { m: G.meters, s: G.score, c: save.coins, a: G.ammo, d: Math.round(G.distance),
+              b: G.bosses.slice(), n: G.nightPhase, r: G.revive, p: G.coinN, k: G.bossIdx,
+              h: P.board > 0 ? 1 : 0, w: Math.round(G.beamCd) };
+  persist();
+}
+function clearCheckpoint() { if (save.cp) { save.cp = null; persist(); } }
+const checkpointAt = () => (save.cp && save.cp.m > 0 ? save.cp.m : 0);
+const fmtM = m => String(Math.floor(m)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+/* a fresh 100,000m run, or a pickup from the last banked checkpoint */
+function resume() {
+  const cp = save.cp;
+  start();
+  if (!cp || !cp.m) return;
+  G.road = cp.m / CFG.M_PER_UNIT; G.meters = cp.m; G.distance = cp.d;
+  G.score = cp.s; save.coins = cp.c; G.ammo = cp.a; G.coinN = cp.p;
+  G.nightPhase = cp.n; setNight(cp.n % 2 === 1);
+  G.bosses = Array.isArray(cp.b) ? cp.b.slice() : [];
+  G.bossIdx = typeof cp.k === "number" ? cp.k : G.bosses.length;
+  G.revive = cp.r | 0; G.cpN = Math.floor(cp.m / CFG.CHECKPOINT);
+  G.beamCd = cp.w | 0;                                /* the roar stays on its clock */
+  /* a checkpoint banks the power-ups too, so you never lose a board to a crash */
+  P.board = cp.h ? 1 : (save.pro ? 1 : 0);
+  P.spy = 0; P.spyT = 0; P.ghost = 0; P.spin = 0;
+  G.flash = 22; Snd.sfx.point();
+  toast("RESUMED AT " + fmtM(cp.m) + "m");
+}
+/* --------------------------- the five road bosses -------------------------- */
+/* ------------------------- power-ups: hoverboard & spy ---------------------- */
+/* Hoverboard: a stock you carry, deploy it with H or a double-tap.  While it is
+   out the dino floats, jumps become kickflips, and the first crash costs the
+   board instead of the run. */
+function boardOn() { return P.board > 0; }
+function deployBoard(auto) {
+  if (G.state !== "run" || P.dead) return false;
+  if (P.board > 0) {                                  /* already flying: stow it */
+    P.board = 0; P.boardT = 0; P.sink = 12;          /* ease down off the hover height */
+    P.spin = 0; P.air = 0; P.flip = -1; P.bob = 0; P.bobV = 0;
+    save.boards = Math.min(99, save.boards + 1); persist();   /* putting it away keeps it */
+    Snd.sfx.click(); return true;
+  }
+  if (save.boards <= 0) {
+    if (auto) return false;
+    toast("NO HOVERBOARD - BUY A PACK IN THE SHOP");
+    Snd.sfx.deny(); return false;
+  }
+  save.boards--; P.board = 1; P.boardT = 0; P.sink = 0;
+  P.bob = 0; P.bobV = -CFG.HOVER_HIT;               /* the deck drops in and settles */
+  persist();
+  Snd.sfx.board(); G.flash = 12;
+  toast(auto ? "HOVERBOARD!" : "HOVERBOARD DEPLOYED");
+  return true;
+}
+function loseBoard() {
+  P.board = 0; P.boardT = 0;
+  P.spin = 0; P.air = 0; P.flip = -1; P.bob = 0; P.bobV = 0;   /* the dino gets his own jump back */
+  burst(P.x + 22, GROUND - 6, 20, 3.2, 26, GOLD);
+  G.flash = 16; shake(6, 20); Snd.sfx.smash();
+  toast("HOVERBOARD CRASHED!");
+}
+/* Incognito: the spy hat makes you intangible for six seconds. */
+function grantSpy() {
+  P.spy = 1; P.spyT = spyMs(); P.spyMax = P.spyT; P.ghost = 0;
+  Snd.sfx.spy(); G.flash = 18;
+  toast("INCOGNITO!");
+}
+/* The deck's rest height this frame: the hover height, plus the idle sway of a
+   board holding station, plus wherever its springs currently are.  Physics and
+   rendering both read it, so the deck you see is always the deck you are on. */
+const deckY = () => CFG.HOVER_H + Math.sin(G.frame / 11) * 1.6 + P.bob;
+function updatePowerups(dt) {
+  /* --- hoverboard: the deck rides a real spring-and-damper, and a kickflip is
+     a real hop.  While the deck is in the air this branch owns P.y and P.vy
+     outright, and the player physics below skips a flying dino, so the hop is
+     integrated exactly once and nothing claws it back down on the launch. --- */
+  if (P.board > 0) {
+    const f = dt / 16.67;
+    P.bob += P.bobV * f;                              /* travel, then react */
+    P.bobV += (-CFG.HOVER_K * P.bob - CFG.HOVER_D * P.bobV) * f;
+    const target = deckY();
+    if (P.air > 0 || P.vy > 0 || P.y > target + 2) {
+      P.vy -= CFG.GRAVITY;                         /* a kickflip falls like a jump */
+      P.y += P.vy;
+      if (P.y <= target && P.vy < 0) {             /* the deck catches the dino */
+        P.y = target; P.vy = 0; P.air = 0; P.flip = -1; P.spin = 0;
+        P.bobV = -CFG.HOVER_HIT;                   /* the springs take the landing */
+        Snd.sfx.land(); puff(P.x + 20, GROUND - target, 4);
+      }
+    } else {
+      P.y += (target - P.y) * 0.18;                /* ease up onto the cushion */
+      P.vy = 0;
+    }
+    P.boardT += dt / 16.67;                        /* frames, like every other timer */
+    if (G.frame % 5 === 0) Snd.sfx.hum(clamp((G.speed - CFG.SPEED) / (CFG.MAX_SPEED - CFG.SPEED), 0, 1));
+    /* the spark trail under the deck */
+    if (G.frame % 2 === 0) {
+      const bx = P.x + 22, by = GROUND - 2;
+      for (let i = 0; i < 3; i++) {
+        G.parts.push({
+          x: bx + rnd(20, -20), y: by + rnd(4, -2),
+          vx: rnd(-2.4, -0.6), vy: rnd(0.5, -0.5),
+          life: ri(8, 18), sz: ri(1, 2),
+          col: pick([GOLD, GOLD, PALE]), soft: true
+        });
+      }
+    }
+  } else if (P.sink > 0) {
+    /* easing down off the hover height after a stow; a real jump cancels it */
+    P.sink -= dt / 16.67;
+    if (P.vy > 0) P.sink = 0;
+    else P.y = Math.max(0, P.y - 3 * dt / 16.67);
+  }
+  /* the kickflip is counted in frames: one full turn over HOVER_SPIN of them */
+  if (P.spin > 0) P.spin = Math.max(0, P.spin - 1);
+  /* --- incognito: run the clock, fade the ghost in and back out --- */
+  if (P.spy > 0) {
+    P.spyT -= dt;
+    const left = P.spyT / (P.spyMax || CFG.SPY_MS);
+    P.ghost = left > 0.9 ? (1 - left) / 0.1 : left < 0.18 ? left / 0.18 : 1;
+    if (P.spyT <= 0) { P.spy = 0; P.spyT = 0; P.ghost = 0; toast("VISIBLE AGAIN"); }
+  }
+}
+/* Intangible for the whole six seconds: P.ghost is only the opacity the dino is
+   drawn at, so fading in must never leave a window where a cactus still kills. */
+const phasing = () => P.spy > 0;
+const flying = () => P.board > 0;
+
+const BOSSES = [
+  { id: "router", name: "WI-FI ROUTER",          at: 10000, hp: 6,  coins: 50,  home: WW - 92, y: GROUND - 104, fire: 130, w: 56, h: 40 },
+  { id: "queen",  name: "PTERODACTYL QUEEN",     at: 25000, hp: 8,  coins: 75,  home: 210,      y: GROUND - 84,  fire: 150, w: 42, h: 36 },
+  { id: "golem",  name: "GLITCH GOLEM",          at: 50000, hp: 10, coins: 100, home: WW - 84,  y: GROUND - 76,  fire: 170, w: 56, h: 76 },
+  { id: "mecha",  name: "CYBER MECHA-REX",       at: 75000, hp: 12, coins: 150, home: 210,      y: GROUND - 96,  fire: 120, w: 80, h: 86 },
+  { id: "meteor", name: "THE EXTINCTION METEOR", at: 99000, hp: 7,  coins: 250, home: 250,      y: 24,           fire: 9999, w: 46, h: 50 }
+];
+const bossBox = b => [b.x, b.y, b.d.w, b.d.h];
+function fireWave(b, y, kind) {
+  const laser = kind === "laser";
+  G.waves.push({ x: b.x - 8, y, w: laser ? 26 : 18, h: laser ? 5 : 9, kind: kind || "wifi",
+                 dead: false, vx: -CFG.BOSS_WAVE, vy: 0 });
+}
+function bossStart(i) {
+  const d = BOSSES[i];
+  G.boss = { d, i, x: WW + 30, y: d.y, hp: d.hp, max: d.hp, t: 0, fire: d.fire, hurt: 0,
+             phase: 0, dive: 0, dash: 0, vx: 0, vy: 0, n: 0 };
+  G.warn = 100; shake(8, 70); Snd.sfx.siren(); Snd.stop();
+  /* the tutorial router gets its own shout, matching the video's alert */
+  toast(i === 0 ? "⚠️ ROUTER BOSS ⚠️" : "BOSS " + (i + 1) + "/5: " + d.name + " INCOMING");
+}
+function bossHit(n, x, y) {
+  const b = G.boss;
+  if (!b) return;
+  b.hp -= n; b.hurt = 14;
+  burst(x, y, 18, 3.2, 24, RED);
+  G.flash = 10; shake(3, 10); Snd.sfx.boom();
+  if (b.hp <= 0) bossDown();
+}
+function bossDown() {
+  const b = G.boss;
+  if (!b) return;
+  const cx = b.x + b.d.w / 2, cy = b.y + b.d.h / 2;
+  burst(cx, cy, 44, 4.2, 44, RED);
+  burst(cx, cy, 22, 2.4, 40, GOLD);
+  confetti(44); firework();
+  shake(9, 46); G.waves.length = 0;
+  save.coins += b.d.coins; G.bonus += b.d.coins; persist();
+  G.flash = 24; Snd.sfx.victory();
+  toast(b.d.name + " DESTROYED!  +" + b.d.coins + " COINS");
+  G.bosses[b.i] = true;
+  G.bossIdx = b.i + 1;
+  G.boss = null;
+  writeCheckpoint();
+}
+function confetti(n) {
+  for (let i = 0; i < n; i++) G.parts.push({
+    x: rnd(WW, 0), y: rnd(-30, -200), vx: rnd(0.9, -0.9), vy: rnd(1.5, 0.4),
+    life: ri(200, 340), sz: ri(1, 3), col: pick([GOLD, CYAN, RED, PALE, INK])
+  });
+}
+/* each boss gets its own brain: how it moves, what it throws, when it hurts */
+function bossBrain(b) {
+  const d = b.d;
+  if (d.id === "router") {                       /* hovering, red Wi-Fi pulses */
+    b.x += clamp((d.home - b.x) * 0.02, -1.5, 1.5) - 0.3;
+    b.y = d.y + Math.sin(b.t / 26) * 7;
+    if (--b.fire <= 0) { b.fire = d.fire; fireWave(b, pick([GROUND - 100, GROUND - 66, GROUND - 32]), "wifi"); Snd.sfx.zap(); }
+  } else if (d.id === "queen") {                 /* diving swoops and minion swarms */
+    if (b.dive > 0) {
+      b.dive--; b.x += b.vx; b.y += b.vy; b.vy += 0.14;
+      if (b.x < -56 || b.y > GROUND - 26) { b.dive = 0; b.x = WW + 24; b.y = d.y; b.vx = 0; b.vy = 0; b.fire = 60; }
+      return;
+    }
+    b.x = clamp(b.x + Math.sin(b.t / 38) * 1.2, 130, WW - d.w - 2);
+    b.y = d.y + Math.sin(b.t / 15) * 26;
+    if (b.phase > 0) b.phase--;
+    if (--b.fire <= 0) {
+      b.fire = d.fire;
+      if (++b.n % 3 === 0) {                     /* minion swarm */
+        for (let k = 0; k < 2; k++)
+          G.waves.push({ x: b.x + 10, y: GROUND - 36 - k * 18, w: 12, h: 8, kind: "minion", dead: false, vx: -2.3, vy: 0 });
+      } else {                                    /* a diving swoop, telegraphed */
+        b.dive = 82; b.vx = -7.8; b.vy = 2.6; b.phase = 34;
+      }
+      Snd.sfx.zap();
+    }
+  } else if (d.id === "golem") {                 /* ground slam shockwaves */
+    b.x += clamp((d.home - b.x) * 0.02, -1.2, 1.2) - 0.2;
+    if (b.phase > 0) {
+      b.phase--;
+      b.y = d.y - Math.sin((1 - b.phase / 36) * Math.PI) * 11;
+      if (b.phase === 0) {
+        G.waves.push({ x: b.x - 6, y: GROUND - 17, w: 22, h: 17, kind: "shock", dead: false, vx: -3.4, vy: 0 });
+        /* the second one waits behind the golem, then follows: every shockwave
+           has to travel left, or it can never reach the dino */
+        G.waves.push({ x: b.x + 62, y: GROUND - 17, w: 22, h: 17, kind: "shock", dead: false, vx: -3.4, vy: 0, hold: 20 });
+        shake(4, 14); Snd.sfx.boom();
+      }
+      return;
+    }
+    b.y = d.y;
+    if (--b.fire <= 0) { b.fire = d.fire; b.phase = 36; }
+  } else if (d.id === "mecha") {                 /* laser blasts and fast dashes */
+    if (b.dash > 0) {
+      b.dash--; b.x += b.vx;
+      if (b.x < 90 || b.x > WW - d.w - 2) { b.dash = 0; b.fire = 70; }
+      return;
+    }
+    b.x = clamp(d.home + Math.sin(b.t / 30) * 72, 120, WW - 70);
+    b.y = d.y + Math.sin(b.t / 22) * 5;
+    if (--b.fire <= 0) {
+      b.fire = d.fire;
+      if (++b.n % 4 === 0) { b.dash = 48; b.vx = b.x > WW / 2 ? -13 : 13; Snd.sfx.zap(); }
+      else fireWave(b, pick([GROUND - 46, GROUND - 20]), "laser");
+    }
+  } else if (d.id === "meteor") {                /* the last one is falling on you */
+    b.x += clamp((d.home - b.x) * 0.03, -2, 2);
+    b.y = 24 + 0.07 * b.t + 0.0003 * b.t * b.t;      /* a seven-second fall */
+    if (G.frame % 3 === 0)
+      G.parts.push({ x: b.x + rnd(34, 6), y: b.y + 10, vx: rnd(-1.5, -0.4), vy: rnd(-2.6, -0.9), life: ri(14, 28), sz: ri(1, 2), col: RED });
+    if (b.y + d.h >= GROUND) { G.boss = null; gameOver("Burned away by the Extinction Meteor"); }
+  }
+}
+function bossUpdate() {
+  const b = G.boss;
+  if (!b) return;
+  b.t++;
+  if (b.hurt > 0) b.hurt--;
+  if (b.t > 45) bossBrain(b);
+  for (let i = G.waves.length - 1; i >= 0; i--) {
+    const w = G.waves[i];
+    if (w.hold > 0) { w.hold--; continue; }         /* still winding up */
+    w.x += w.vx; w.y += w.vy;
+    if (w.dead) { w.vx += 0.12; w.y += w.vy; }
+    if (w.x + w.w < -40 || w.x > WW + 60 || w.y > GROUND + 40 || w.y < -70) G.waves.splice(i, 1);
+  }
+  if (G.waves.length > 22) G.waves.splice(0, G.waves.length - 22);
+  if (P.shield > 0) return;                       /* the golden shield eats one hit */
+  if (phasing()) return;                          /* incognito: boss shots pass through */
+  const db = dinoBoxes();
+  for (let i = 0; i < G.waves.length; i++) {
+    const w = G.waves[i], wb = [w.x, w.y, w.w, w.h];
+    if (!w.dead && (hitBox(db[0], wb) || (db[1] && hitBox(db[1], wb)))) {
+      /* the board is good for one hit from anything, boss included */
+      if (flying()) { w.dead = true; w.vx = 2; w.vy = -3; loseBoard(); return; }
+      gameOver(bossExcuse(b, w)); return;
+    }
+  }
+}
+function bossExcuse(b, w) {
+  if (b.d.id === "golem" && w && w.kind === "shock") return "Crushed by a Glitch Golem shockwave";
+  if (b.d.id === "mecha" && w && w.kind === "laser") return "Lasered by the Cyber Mecha-Rex";
+  if (b.d.id === "queen") return "Snagged by the Pterodactyl Queen";
+  if (b.d.id === "meteor") return "Burned away by the Extinction Meteor";
+  return "Struck by a Wi-Fi energy pulse";
+}
+
+function jump() {
+  if (G.state === "ready") { start(); return; }
+  if (G.state === "win") { if (G.t > G.restartAt) { clearCheckpoint(); start(); } return; }
+  if (G.state === "over") { if (G.t > G.restartAt) resume(); return; }
+  if (G.state === "pause") { G.state = "run"; Snd.start(); return; }
+  if (G.state !== "run" || P.dead) return;
+  if (P.grind) { P.grind = null; P.vy = jumpV() * 0.9; P.air = 1; Snd.sfx.djump(); return; }
+  if (flying()) {
+    /* on a board a jump is a 360 kickflip: a real hop, then a full spin.
+       P.air counts the hops taken since the deck last caught the dino, which
+       is a sturdier gate than the hover height — that bobs, so comparing
+       P.y against it read the first tap as a double jump half the time. */
+    if (P.air < 2) {
+      const first = P.air === 0;
+      P.air++;
+      P.vy = first ? jumpV() : jumpV() * 0.88;
+      P.flip = first ? -1 : 0;
+      P.spin = CFG.HOVER_SPIN;
+      if (first) { Snd.sfx.jump(); Snd.sfx.spin(); } else Snd.sfx.djump();
+    }
+    return;
+  }
+  if (P.y <= 0.01) { P.vy = jumpV(); P.air = 0; P.flip = -1; Snd.sfx.jump(); }
+  else if (P.air < 1) {
+    P.air++; P.vy = jumpV() * 0.88; P.flip = 0;
+    burst(P.x + 20, GROUND - 43 - P.y + 40, 9, 2.2, 10); Snd.sfx.djump();
+  }
+}
+/* the parry window: something close enough to swat, whichever button is down */
+function parryThreat() {
+  const top = GROUND - 43 - P.y;
+  for (const o of G.obs) {
+    if (o.dead || o.ridden) continue;
+    if (o.x + o.w > P.x + 12 && o.x < P.x + 88 && o.y + o.h > top - 6 && o.y < top + 46) return o;
+  }
+  for (const w of G.waves) {
+    if (w.dead || w.hold > 0) continue;
+    if (w.x + w.w > P.x + 8 && w.x < P.x + 84 && w.y + w.h > top - 12 && w.y < top + 46) return w;
+  }
+  const b = G.boss;                                 /* parrying the boss itself */
+  if (b && b.x + b.d.w > P.x + 10 && b.x < P.x + 96 && b.y + b.d.h > top - 10 && b.y < top + 48) return b;
+  return null;
+}
+function parry(o) {
+  const b = G.boss;
+  if (o === b) {                                    /* a parry chips a boss twice */
+    bossHit(2, o.x + o.d.w / 2, o.y + o.d.h / 2);
+    burst(o.x + o.d.w / 2, o.y + o.d.h / 2, 18, 3.4, 26, CYAN);
+  } else {
+    o.dead = true; o.vx = 1.4; o.vy = -5.5;
+    burst(o.x + (o.w || 18) / 2, o.y + 6, 16, 3.2, 26, CYAN);
+    if (b) bossHit(1, o.x + 8, o.y + 4);            /* deflecting its own shot hurts it */
+  }
+  G.bonus += 50; G.flash = 16; shake(3, 10); Snd.sfx.parry();
+  toast("PARRY!");
+  bumpCombo(1);
+  /* the shockwave launches the dino upward into a backflip */
+  P.vy = jumpV() * 1.12; P.y = Math.max(P.y, 1.5); P.air = 1; P.flip = 0;
+  Snd.sfx.djump();
+}
+/* One place for the "a control was pressed" state machine: every in-run button
+   routes through here, so start / restart / unpause behave the same everywhere. */
+function runInput() {
+  if (G.state === "ready") { start(); return false; }
+  if (G.state === "win") { if (G.t > G.restartAt) { clearCheckpoint(); start(); } return false; }
+  if (G.state === "over") { if (G.t > G.restartAt) resume(); return false; }
+  if (G.state === "pause") { G.state = "run"; Snd.start(); return false; }
+  return G.state === "run" && !P.dead;
+}
+/* Enter / J / → stay context sensitive so the keyboard keeps its one-button
+   feel: swat what is in range, otherwise spend a rocket. */
+function action() {
+  if (!runInput()) return;
+  const threat = parryThreat();
+  if (threat) { parry(threat); return; }
+  rocket();
+}
+/* PARRY: a timed shockwave.  Double-tap it for the Laser Roar. */
+function parryPress() {
+  if (!runInput()) return;
+  if (G.lastParry >= 0 && G.t - G.lastParry < 320) { G.lastParry = -1; laserRoar(); return; }
+  G.lastParry = G.t;
+  const threat = parryThreat();
+  if (threat) { parry(threat); return; }
+  Snd.sfx.deny();                                   /* nothing close enough to swat */
+}
+/* ROCKET: a high-speed missile, gated on ammo. */
+function rocket() {
+  if (!runInput()) return;
+  if (G.ammo <= 0) { Snd.sfx.deny(); return; }     /* out of rockets */
+  if (G.cool > 0) return;
+  G.ammo--; G.cool = 0.25;
+  /* the shot remembers whether the board fired it: a missile leaving the deck
+     rakes the road below it instead of sailing over every short cactus */
+  G.shots.push({ x: P.x + 30, y: GROUND - 43 - P.y + 11, board: flying() });
+  Snd.sfx.shoot();
+}
+/* --------------------------- combo & Laser Roar --------------------------- */
+/* Every kill chains the combo; five in a row (or the R key / a double-tapped
+   PARRY) fire the Roar: a split-second pause, a growl, then a screen-wide beam
+   that vaporizes every cactus and bird on screen into sparks. */
+function bumpCombo(n) {
+  G.combo += n; G.comboT = CFG.COMBO_MS;
+  if (G.combo > 0 && G.combo % CFG.COMBO_HIT === 0) laserRoar(true);
+}
+/* The roar is a limited weapon, not a button you can lean on: the manual
+   triggers (R, or a double-tapped PARRY) have to recharge for LASER_CD, and a
+   hot gun says so instead of firing.  A five-kill combo is a reward, so it is
+   allowed to spend a charge that is still warm — but it still re-arms the
+   clock, so even the combo cannot machine-gun the screen. */
+function laserRoar(auto) {
+  if (G.state !== "run" || P.dead || G.beamT > 0) return;
+  if (!auto && G.beamCd > 0) {
+    toast("LASER RECHARGING " + (G.beamCd / 1000).toFixed(1) + "s");
+    Snd.sfx.deny();
+    return;
+  }
+  G.beamT = CFG.LASER_MS;
+  G.beamCd = recharge(CFG.LASER_CD);
+  G.beamY = GROUND - 43 - P.y + 13;
+  G.flash = 26; shake(5, 18); Snd.sfx.roar();
+  let n = 0;
+  for (const o of G.obs) {
+    if (o.dead || o.ridden) continue;
+    o.dead = true; o.vx = 1.6; o.vy = -3.2; n++;
+    burst(o.x + o.w / 2, o.y + o.h / 2, 16, 3, 22, CYAN);
+    G.bonus += 10;
+  }
+  G.combo = 0; G.comboT = 0;
+  toast(n ? "LASER ROAR!  x" + n : "LASER ROAR!");
+}
+/* --------------------------- the grappling hook ---------------------------- */
+/* Fire a rope up to the nearest cloud or pterodactyl and swing through the air
+   for three seconds, safely over the ground hazards, then detach with a NICE!. */
+function hookTarget() {
+  let best = null, bd = 1e9;
+  const consider = (x, y, ref, cloud) => {
+    if (x < P.x + 10 || x > WW - 6 || y > GROUND - 36 || y < 6) return;
+    const d = (x - P.x) + Math.abs(y - (GROUND - 43 - P.y)) * 0.35;
+    if (d < bd) { bd = d; best = { x, y, ref, cloud }; }
+  };
+  for (const o of G.obs) if (o.fly && !o.dead) consider(o.x + 12, o.y + 6, o, false);
+  for (const c of G.clouds) consider(c.x + 20, c.y + 8, null, true);
+  return best;
+}
+function hook() {
+  if (!runInput()) return;
+  if (P.hookT > 0) return;
+  if (flying()) { Snd.sfx.deny(); return; }        /* stow the board first */
+  const t = hookTarget();
+  if (!t) { toast("NO ANCHOR - FIND A CLOUD OR PTERODACTYL"); Snd.sfx.deny(); return; }
+  P.hook = t; P.hookT = CFG.HOOK_MS;
+  P.vy = 0; P.air = 0; P.flip = -1; P.grind = null; P.sink = 0;
+  G.combo = 0; G.comboT = 0;
+  Snd.sfx.hook();
+  toast("GRAPPLE!");
+}
+function updateHook(dt) {
+  if (P.hookT <= 0) return;
+  if (P.hook) {
+    /* ride the anchor: a live bird moves with the world, a cloud just drifts */
+    if (P.hook.ref && !P.hook.ref.dead) { P.hook.x = P.hook.ref.x + 12; P.hook.y = P.hook.ref.y + 6; }
+    else P.hook.x -= G.spd;
+    if (P.hook.x < -40) P.hookT = 0;
+  }
+  P.hookT -= dt;
+  /* a smooth pendulum: rise to the top of the arc, then settle back down */
+  const k = clamp(1 - Math.max(0, P.hookT) / CFG.HOOK_MS, 0, 1);
+  P.y = CFG.HOOK_ARC * Math.sin(k * Math.PI) + CFG.HOVER_H * 0.4;
+  P.vy = 0; P.air = 1; P.duck = false;
+  if (G.frame % 6 === 0)
+    G.parts.push({ x: P.x + 22, y: GROUND - P.y, vx: rnd(-1.6, -0.4), vy: rnd(-1, 0.3), life: 14, sz: 1, col: CYAN, soft: true });
+  if (P.hookT <= 0) {
+    P.hookT = 0; P.hook = null;
+    P.vy = jumpV() * 0.45; P.air = 1;
+    G.bonus += CFG.HOOK_PTS;
+    toast("NICE!");
+    Snd.sfx.point();
+  }
+}
+/* bullet time: 35% speed for 2s, then a cooldown */
+function slowMo() {
+  if (G.state === "ready") { start(); return; }
+  if (G.state === "win") { if (G.t > G.restartAt) start(); return; }
+  if (G.state === "over") { if (G.t > G.restartAt) start(); return; }
+  if (G.state === "pause") { G.state = "run"; Snd.start(); return; }
+  if (G.state !== "run" || P.dead) return;
+  if (G.slowT > 0 || G.slowCd > 0) { Snd.sfx.deny(); return; }
+  G.slowT = CFG.SLOW_MS; G.slowCd = CFG.SLOW_MS + recharge(CFG.SLOW_CD);
+  G.flash = 12; Snd.sfx.slow();
+  burst(P.x + 20, GROUND - 22 - P.y, 14, 2.4, 20, CYAN);
+}
+/* ------------------------------ DINO PRO ---------------------------------- */
+/* Everything the VIP pass changes about a run is spelled out here, and every
+   one of these is a real line of code somewhere else — the list is the
+   contract, not a promise. */
+const PERKS = [
+  ["2x",    "WI-FI COINS",    "Every coin pays double."],
+  ["2",     "FREE REVIVES",   "Two golden shields."],
+  ["3",     "FREE ROCKETS",   "Loaded at every start."],
+  ["1",     "GOLDEN BOARD",   "Start every run flying."],
+  ["MAG",   "COIN MAGNET",    "Coins fly to your hand."],
+  ["1/2",   "OVERCLOCK",      "SLOW + laser, half wait."],
+  ["9s",    "LONG INCOGNITO", "Nine seconds of ghost."],
+  ["CROWN", "GOLDEN DINO",    "The crown skin, free."]
+];
+/* the two perks that scale time rather than counts */
+const recharge = ms => (save.pro ? ms * CFG.PRO_CD : ms);
+const spyMs = () => (save.pro ? CFG.SPY_MS * CFG.PRO_SPY : CFG.SPY_MS);
+/* PRO's magnet: a coin inside this radius is reeled into the dino's hands */
+const magnet = () => (save.pro ? CFG.PRO_MAGNET : 0);
+function openPro() {
+  G.proBack = ["run", "pause", "ready", "over", "win"].indexOf(G.state) >= 0 ? G.state : "ready";
+  G.state = "pro"; G.proMsg = ""; G.proMsgT = 0;
+  if (G.proBack === "run") Snd.stop();
+  Snd.sfx.click();
+}
+function closePro() {
+  G.state = G.proBack;
+  if (G.state === "run") Snd.start();
+  Snd.sfx.click();
+}
+function activatePro() {
+  if (save.pro) { save.pro = false; shopMsgSave(); Snd.sfx.deny(); }
+  else {
+    save.pro = true;
+    if (save.owned.indexOf("gold") === -1) save.owned.push("gold");
+    Snd.sfx.buy(); toast("PRO ACTIVATED - GOLDEN DINO UNLOCKED");
+  }
+  persist(); refreshProChip();
+}
+function shopMsgSave() { G.proMsg = "PRO PASS DEACTIVATED"; G.proMsgT = 100; }
+function slidePress() {
+  if (G.state === "over") { if (G.t > G.restartAt) resume(); return; }
+  if (G.state === "ready" || G.state === "win") { if (G.t > G.restartAt) { clearCheckpoint(); start(); } return; }
+  if (G.state === "pause") { G.state = "run"; Snd.start(); return; }
+  held.padSlide = true;
+}
+const slideRelease = () => { held.padSlide = false; };
+function togglePause() {
+  if (G.state === "run") { G.state = "pause"; Snd.stop(); Snd.sfx.click(); }
+  else if (G.state === "pause") { G.state = "run"; Snd.start(); Snd.sfx.click(); }
+}
+function refreshSoundChip() {
+  const el = document.getElementById("bSound");
+  if (!el) return;
+  el.textContent = save.sound ? "SOUND" : "MUTED";
+  el.classList.toggle("off", !save.sound);
+}
+function refreshProChip() {
+  const el = document.getElementById("bPro");
+  if (!el) return;
+  el.textContent = save.pro ? "👑 PRO" : "👑 GO PRO";
+  el.classList.toggle("active", !!save.pro);
+}
+function toggleSound() {
+  save.sound = !save.sound; persist();
+  if (save.sound) { Snd.init(); Snd.resume(); if (G.state === "run") Snd.start(); else Snd.sfx.click(); }
+  else Snd.stop();
+  refreshSoundChip();
+}
+
+/* ------------------------------- keyboard --------------------------------- */
+const KEYS = {
+  Space: "jump", KeyW: "jump", ArrowUp: "jump", KeyK: "jump",
+  ArrowDown: "slide", KeyS: "slide", KeyA: "slide",
+  KeyF: "rocket", KeyC: "parry", Enter: "action", KeyJ: "action", ArrowRight: "action",
+  ShiftLeft: "slow", ShiftRight: "slow",
+  KeyH: "board", KeyG: "hook", KeyR: "laser",
+  KeyP: "pause", Escape: "pause", KeyM: "mute"
+};
+window.addEventListener("keydown", e => {
+  if (G.state === "pro") {                             /* the VIP modal owns the keyboard */
+    e.preventDefault();
+    if (e.code === "Escape" || e.code === "KeyP") closePro();
+    else if (e.code === "Space" || e.code === "Enter" || e.code === "KeyF") activatePro();
+    return;
+  }
+  if (G.state === "shop") {                            /* the shop owns the keyboard */
+    e.preventDefault();
+    if (e.code === "Escape" || e.code === "KeyP") closeShop();
+    /* the shop is a grid: up/down step a row, left/right step a column, and
+       down off the last row lands on the full-width hoverboard pack */
+    else if (e.code === "ArrowDown" || e.code === "KeyS") { G.shopSel = Math.min(SKINS.length, G.shopSel + SHOP_COLS); Snd.sfx.click(); }
+    else if (e.code === "ArrowUp" || e.code === "KeyW") { G.shopSel = Math.max(0, G.shopSel - SHOP_COLS); Snd.sfx.click(); }
+    else if (e.code === "ArrowRight" || e.code === "KeyD") { G.shopSel = Math.min(SKINS.length - 1, G.shopSel + 1); Snd.sfx.click(); }
+    else if (e.code === "ArrowLeft" || e.code === "KeyA") { G.shopSel = Math.max(0, G.shopSel - 1); Snd.sfx.click(); }
+    else if (e.code === "Space" || e.code === "Enter" || e.code === "KeyF") {
+      if (G.shopSel >= SKINS.length + 1) closeShop(); else shopPick(G.shopSel);
+    }
+    return;
+  }
+  const a = KEYS[e.code];
+  if (!a) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  Snd.init(); Snd.resume();
+  if (a === "jump") jump();
+  else if (a === "slide") held.keySlide = true;
+  else if (a === "action") action();
+  else if (a === "rocket") rocket();
+  else if (a === "parry") parryPress();
+  else if (a === "hook") hook();
+  else if (a === "laser") laserRoar();
+  else if (a === "slow") slowMo();
+  else if (a === "board") deployBoard(false);
+  else if (a === "pause") togglePause();
+  else if (a === "mute") toggleSound();
+}, { passive: false });
+window.addEventListener("keyup", e => { if (KEYS[e.code] === "slide") held.keySlide = false; });
+window.addEventListener("blur", () => { held.keySlide = false; held.padSlide = false; });
+
+/* ---------------------------- on-screen gamepad ---------------------------- */
+function bindButton(id, on, off) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const down = e => {
+    e.preventDefault(); e.stopPropagation();
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    el.classList.add("on");
+    Snd.init(); Snd.resume();
+    if (on) on();
+  };
+  const up = () => { el.classList.remove("on"); if (off) off(); };
+  el.addEventListener("pointerdown", down);
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+  el.addEventListener("lostpointercapture", up);
+  el.addEventListener("contextmenu", e => e.preventDefault());
+}
+bindButton("bGrind", slidePress, slideRelease);
+bindButton("bSlow", slowMo);
+bindButton("bParry", parryPress);
+bindButton("bRocket", rocket);
+bindButton("bHook", hook);
+bindButton("bRide", () => deployBoard(false));
+bindButton("bJump", () => jump());
+bindButton("bPause", togglePause);
+bindButton("bSound", toggleSound);
+bindButton("bPro", openPro);
+
+/* ------------- tap the field = JUMP · drag down = slide -------------------
+   One gesture model, and it fires on the PRESS, not on the release.  Waiting
+   for the finger to come up was what made the dino feel unresponsive, and it
+   made a second tap in mid-air impossible to land at all — the old double-tap
+   shortcut grabbed every quick second tap and spent it on the hoverboard
+   instead.  Now: every press on the field is a jump, a second press while
+   airborne is the 360 backflip double jump, a downward drag is a slide, and
+   the hoverboard is only ever deployed by RIDE or H. */
+let gest = null;
+const isUi = t => !!(t && t.closest && (t.closest("#pad") || t.closest("#topbar")));
+function fieldPress(e) {
+  if (isUi(e.target)) return;
+  Snd.init(); Snd.resume();
+  const p = toWorld(e), hit = hitUI(p.x, p.y);
+  if (hit) { onUI(hit); return; }
+  gest = { id: e.pointerId, x: e.clientX, y: e.clientY, acted: false };
+  /* the first tap is the door: it starts, resumes or restarts, and never jumps */
+  if (G.state === "ready") { start(); return; }
+  if (G.state === "over") { if (G.t > G.restartAt) resume(); return; }
+  if (G.state === "win") { if (G.t > G.restartAt) { clearCheckpoint(); start(); } return; }
+  if (G.state === "pause") { G.state = "run"; Snd.start(); return; }
+  if (G.state === "run" && !P.dead) {
+    gest.fromGround = P.y <= 0.01 && !flying() && !P.grind;
+    jump();
+  }
+}
+wrap.addEventListener("pointerdown", fieldPress, { passive: true });
+/* Touch, belt and braces: pointer events cover every browser we run on, and
+   this listener exists to kill the browser gestures that sit between a finger
+   and the dino — the double-tap-zoom wait, scroll chaining, text selection.
+   Touches on the top bar are left alone, because those chips need their own
+   synthetic click (the INSTALL chip waits for one). */
+wrap.addEventListener("touchstart", e => {
+  if (isUi(e.target)) return;
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+wrap.addEventListener("pointermove", e => {
+  if (!gest || e.pointerId !== gest.id || gest.acted) return;
+  const dx = e.clientX - gest.x, dy = e.clientY - gest.y;
+  if (Math.abs(dy) > 26 && Math.abs(dy) > Math.abs(dx)) {
+    if (dy > 0) {
+      /* a downward drag was always meant as a slide, not a hop: if the press
+         had only just launched the dino off the ground, quietly cancel that
+         hop so the gesture reads as one clean slide */
+      if (gest.fromGround && P.y < 40) { P.y = 0; P.vy = 0; P.air = 0; P.flip = -1; }
+      gest.acted = true; held.swipe = true; held.swipeUntil = G.t + 340;
+    } else gest.acted = true;
+  } else if (Math.abs(dx) > 34) gest.acted = true;
+}, { passive: true });
+wrap.addEventListener("pointerup", () => { gest = null; }, { passive: true });
+wrap.addEventListener("pointercancel", () => { gest = null; });
+
+/* --------------------------- show pad on touch ---------------------------- */
+let touchUI = false;
+function enableTouchUI() {
+  if (touchUI) return;
+  touchUI = true;
+  if (document.body && document.body.classList) document.body.classList.add("touch");
+  Snd.resume();
+  resize();          /* the pad now needs its own band under the game */
+}
+if ((window.matchMedia && window.matchMedia("(pointer: coarse)").matches) || (navigator.maxTouchPoints || 0) > 0) enableTouchUI();
+window.addEventListener("touchstart", enableTouchUI, { passive: true });
+window.addEventListener("pointerdown", e => { if (e.pointerType === "touch") enableTouchUI(); }, { passive: true });
+document.addEventListener("visibilitychange", () => { if (document.hidden && G.state === "run") { G.state = "pause"; Snd.stop(); } });
+
+/* ------------------------------- world helpers ---------------------------- */
+function shake(mag, t) { G.shakeM = mag; G.shakeT = t; }
+/* night falls in phases: scene 1 is day, scene 2 night, scene 3 day again... */
+function setNight(on) {
+  if (G.night === on) return;
+  G.night = on;
+  const root = document.documentElement;
+  if (root && root.classList) root.classList.toggle("night", on);
+  /* the browser chrome (and the Android status bar in a TWA) follows the sky */
+  const mt = document.getElementById("metaTheme");
+  if (mt && mt.setAttribute) mt.setAttribute("content", on ? "#0e0e0e" : "#ffffff");
+  Snd.setNight(on);
+  if (on && !G.stars.length) for (let i = 0; i < 16; i++) G.stars.push({ x: rnd(WW), y: ri(8, 104), k: pick([1, 1, 1, 1.4, 1.8]), seed: ri(0, 140) });
+}
+function burst(x, y, n, spd, life, col) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(TAU);
+    G.parts.push({ x, y, vx: Math.cos(a) * rnd(spd), vy: Math.sin(a) * rnd(spd) - 0.6, life: life + ri(0, 10), sz: ri(1, 2), col: col });
+  }
+}
+function puff(x, y, n) {
+  for (let i = 0; i < n; i++) G.parts.push({ x: x + ri(-4, 4), y, vx: rnd(-0.3, -1.5), vy: rnd(-0.6, 0.2), life: ri(10, 22), sz: ri(1, 2), soft: true });
+}
+/* A deliberately thin road.  counts is at most two wide (no more triple walls),
+   minGap is generous, and GAPK below scales the whole thing up again.  Pairs of
+   cacti are still the bread and butter; pterodactyls are the seasoning. */
+const OBST = {
+  cactus1: { w: 15, h: 33, minGap: 165, counts: [1, 2], box: [1, 2, 13, 30] },
+  cactus2: { w: 23, h: 48, minGap: 165, counts: [1, 2], box: [1, 2, 21, 45] },
+  ptero:   { w: 42, h: 36, minGap: 200, counts: [1],     box: [6, 6, 30, 24], fly: true }
+};
+function spawnObstacle() {
+  let pool = ["cactus1", "cactus2"];
+  if (G.score >= 130) pool.push("ptero");
+  /* late game the pterodactyls are the accent, not the main course */
+  if (G.score >= 380) pool = ["cactus1", "cactus1", "cactus2", "cactus2", "ptero"];
+  const k = pick(pool), t = OBST[k];
+  const n = t.fly ? 1 : pick(t.counts);
+  const w = t.w * n;
+  let y;
+  if (t.fly) {
+    const lane = pick(G.score > 500 ? [0, 1, 2] : [0, 1]);
+    y = lane === 0 ? GROUND - t.h : lane === 1 ? GROUND - t.h - 30 : GROUND - t.h - 58;
+  } else y = GROUND - t.h;
+  const minGap = Math.round((w * G.speed + t.minGap * 0.6) * CFG.GAPK);
+  G.obs.push({
+    k, n, x: WW + 8, y, w, h: t.h, box: t.box, fly: !!t.fly,
+    /* the gap varies a lot on purpose: a run of calm opens up between the
+       clusters, so the road breathes instead of arriving on a metronome */
+    f: 0, fanim: 0, gap: Math.round(minGap * rnd(2.1, 1.2)), dead: false, vx: 0, vy: 0, ridden: false
+  });
+}
+function maybeSpawn() {
+  if (G.boss) return;                               /* the router owns the road */
+  if (!G.obs.length) { spawnObstacle(); return; }
+  const last = G.obs[G.obs.length - 1];
+  if (!last.dead && last.x + last.w + last.gap <= WW) spawnObstacle();
+}
+function boxesOf(o) {
+  const out = [], b = o.box, step = OBST[o.k].w;
+  for (let i = 0; i < o.n; i++) out.push([o.x + i * step + b[0], o.y + b[1], b[2], b[3]]);
+  return out;
+}
+function dinoBoxes() {
+  if (P.duck && P.y <= 0.01) return [[P.x - 4, GROUND - 21, 44, 19]];
+  const y = GROUND - 43 - P.y;
+  return [[P.x + 5, y + 1, 24, 36], [P.x + 20, y, 19, 15]];
+}
+const hitBox = (a, b) => a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1];
+function hitsObstacle(o) {
+  const db = dinoBoxes(), ob = boxesOf(o);
+  for (let i = 0; i < ob.length; i++) for (let j = 0; j < db.length; j++) if (hitBox(db[j], ob[i])) return true;
+  return false;
+}
+/* ----------------------------- collectibles ------------------------------- */
+const ITEM = { coin: { w: 11, h: 8, spr: "wifi" }, rocket: { w: 13, h: 9, spr: "rocket" },
+               board: { w: 26, h: 14, spr: "pkBoard" }, spy: { w: 24, h: 16, spr: "pkSpy" } };
+function spawnItems(boss) {
+  const x = WW + 24 + rnd(0, 70);
+  for (const o of G.obs) if (!o.dead && o.x + o.w > x - 52 && o.x < x + 52 + o.w) return;   /* keep gaps clean */
+  G.itemN++;
+  /* while a boss owns the road the track feeds you missiles instead of coins,
+     so no gate can outlast the ammo you walked in with */
+  if (boss) { G.items.push({ k: "rocket", x, y: GROUND - 30, w: 13, h: 9 }); return; }
+  /* rare power-up drops: a hoverboard, or the incognito spy hat */
+  if (G.itemN % CFG.BOARD_EVERY === 0 && !P.board) {
+    G.items.push({ k: "board", x, y: GROUND - 34, w: 26, h: 14 }); return;
+  }
+  if (G.itemN % CFG.SPY_EVERY === 0 && !P.spy) {
+    G.items.push({ k: "spy", x, y: GROUND - 40, w: 24, h: 16 }); return;
+  }
+  if (G.itemN % CFG.ROCKET_EVERY === 0) G.items.push({ k: "rocket", x, y: GROUND - 30, w: 13, h: 9 });
+  else {
+    const h = pick([14, 54, 78]);                   /* ground, jump, big jump */
+    for (let i = 0; i < 3; i++) G.items.push({ k: "coin", x: x + i * 19, y: GROUND - h, w: 11, h: 8 });
+  }
+}
+function collect(it) {
+  if (it.k === "coin") {
+    const n = save.pro ? CFG.PRO_COINS : 1;      /* PRO: double coins */
+    save.coins += n; G.coinN++; G.bonus += 1;
+    if (G.coinN % 10 === 0) persist();
+    burst(it.x + 5, it.y + 4, 6, 1.8, 12, save.pro ? GOLD : null);
+    Snd.sfx.coin();
+  } else if (it.k === "board") {
+    save.boards = Math.min(99, save.boards + 1); persist();
+    burst(it.x + 13, it.y + 7, 16, 2.6, 22, GOLD); Snd.sfx.buy();
+    toast("HOVERBOARD +1  (" + save.boards + " IN STOCK)");
+  } else if (it.k === "spy") {
+    grantSpy();
+    burst(it.x + 12, it.y + 8, 18, 2.8, 24, mixHex(SOFT, PAPER, 0.2));
+  } else {
+    G.ammo = Math.min(CFG.AMMO_MAX, G.ammo + CFG.BOX_AMMO);   /* the [ROCKET] box carries three */
+    burst(it.x + 6, it.y + 4, 14, 2.6, 16, RED);
+    Snd.sfx.ammo();
+  }
+}
+/* hold SLIDE while dropping onto a cactus crown to rail-grind it */
+function tryGrind() {
+  if (P.grind || P.dead || !slideHeld()) return;
+  const nose = P.x + 40;
+  for (const o of G.obs) {
+    if (o.fly || o.dead || o.ridden) continue;
+    if (!(o.x < nose - 3 && o.x + o.w > P.x + 6)) continue;
+    if (P.y > o.h - 9 && P.y < o.h + 26 && P.vy <= 3) {
+      P.grind = o; P.y = o.h; P.vy = 0; P.flip = -1; o.ridden = true;
+      Snd.sfx.grind(); shake(2, 8);
+      toast("SICK GRIND!");
+      bumpCombo(1);
+      return;
+    }
+  }
+}
+
+/* --------------------------------- update --------------------------------- */
+function update() {
+  G.t += STEP; G.frame++; G.blink++;
+  if (G.shakeT > 0) G.shakeT--;
+  if (G.flash > 0) G.flash--;
+  if (G.cool > 0) G.cool = Math.max(0, G.cool - STEP / 1000);
+  if (G.shopMsgT > 0) G.shopMsgT--;
+  if (G.proMsgT > 0) G.proMsgT--;
+  if (G.toastT > 0) G.toastT--;
+  if (G.warn > 0) G.warn--;
+  if (G.cpFlash > 0) G.cpFlash--;
+  if (G.slowT > 0) G.slowT = Math.max(0, G.slowT - STEP);
+  if (G.slowCd > 0) G.slowCd = Math.max(0, G.slowCd - STEP);
+  if (G.comboT > 0) { G.comboT = Math.max(0, G.comboT - STEP); if (G.comboT === 0) G.combo = 0; }
+  if (G.beamT > 0) G.beamT = Math.max(0, G.beamT - STEP);
+  if (G.beamCd > 0) G.beamCd = Math.max(0, G.beamCd - STEP);
+  if (G.state === "run" && !P.dead) updatePowerups(STEP);
+  if (P.shield > 0) P.shield = Math.max(0, P.shield - STEP);
+  if (held.swipe && gest && gest.acted) held.swipeUntil = G.t + 220;
+  if (G.state === "pause") return;
+
+  const running = G.state === "run" && !P.dead;
+  G.spd = G.speed * (G.slowT > 0 ? CFG.SLOW_SCALE : 1);
+  const drift = running ? G.spd : 2;
+
+  /* dusk: cross-fade the whole palette, then drift the starfield */
+  const wantNight = G.night ? 1 : 0;
+  if (G.nightMix !== wantNight) {
+    const dn = 1 / CFG.NIGHT_FADE;
+    G.nightMix = wantNight > G.nightMix ? Math.min(1, G.nightMix + dn) : Math.max(0, G.nightMix - dn);
+  }
+  if (G.stars.length) for (const s of G.stars) {
+    s.x -= drift * 0.06 * s.k;
+    if (s.x < -24) { s.x = WW + rnd(0, 140); s.y = ri(8, 104); }
+  }
+  if (G.state === "shop" || G.state === "pro") return;   /* the track is frozen, the sky isn't */
+
+  /* Clouds are always in the sky, on every screen: they are the scenery, and
+     they are also the only anchor a grappling hook can reach.  They spawn in a
+     band that is low enough to hook (the hook reaches y <= 124) and high enough
+     to stay clear of the road and of the dino's own jump arc. */
+  if (--G.cloudT <= 0 && G.clouds.length < CFG.CLOUD_MAX) {
+    G.clouds.push({ x: WW + 12, y: ri(CFG.CLOUD_MIN_Y, CFG.CLOUD_MAX_Y), s: rnd(1.3, 0.75) });
+    G.cloudT = ri(CFG.CLOUD_MIN_GAP, CFG.CLOUD_MAX_GAP);
+  }
+  for (let i = G.clouds.length - 1; i >= 0; i--) {
+    const c = G.clouds[i];
+    c.x -= drift * 0.2 * c.s;
+    if (c.x < -60) G.clouds.splice(i, 1);
+  }
+  for (let i = G.parts.length - 1; i >= 0; i--) {
+    const p = G.parts[i];
+    p.x += p.vx; p.y += p.vy;
+    if (!p.soft) p.vy += 0.2;
+    if (p.conf) { p.vx += Math.sin((p.y + G.frame) / 9) * 0.12; if (p.y > GROUND) p.life = Math.min(p.life, 12); }
+    if (--p.life <= 0) G.parts.splice(i, 1);
+  }
+  if (G.state === "ready") return;
+  if (G.state === "win") { winUpdate(); return; }
+  if (P.dead) return;
+
+  /* -------------------------------- player -------------------------------- */
+  const wantDuck = slideHeld();
+  if (P.hookT > 0) {
+    updateHook(STEP);                       /* the pendulum owns the dino's height */
+  } else if (P.grind) {
+    const o = P.grind;
+    P.y = o.h; P.vy = 0;
+    if (G.frame % 5 === 0) Snd.sfx.grind();
+    if (G.frame % 6 === 0) {
+      G.parts.push({ x: P.x + ri(0, 34), y: GROUND - P.y + ri(-5, 0), vx: rnd(-0.6, -2.2), vy: rnd(-1.7, -0.2), life: ri(8, 16), sz: 1 });
+      G.distance += 4; G.bonus += 1;
+    }
+    if (o.x + o.w < P.x + 8) { P.grind = null; P.vy = 0; }
+  } else if (!flying() && (P.y > 0.01 || P.vy > 0)) {
+    /* airborne: integrate.  A fresh jump only sets P.vy, so this must run on
+       the very frame the jump starts, before the landing test can reset it.
+       A flying dino is skipped: the board's own branch in updatePowerups
+       integrates its hop against the deck as the floor, not the road. */
+    P.vy -= (wantDuck ? CFG.FAST_GRAVITY : CFG.GRAVITY);
+    P.y += P.vy;
+    if (P.y <= 0) {
+      P.y = 0; P.vy = 0; P.air = 0; P.flip = -1;
+      Snd.sfx.land(); puff(P.x + 20, GROUND, 4);
+    }
+  } else if (!flying()) { P.y = 0; P.vy = 0; P.air = 0; }   /* snap the last sub-pixel of the landing */
+  if (P.flip >= 0 && P.flip < 1) P.flip = Math.min(1, P.flip + 0.045);
+  P.duck = wantDuck && P.y <= 0.01 && !P.grind && P.hookT <= 0;
+  /* the jump trajectory: a short history of heights drawn as a dotted trail */
+  if (P.y > 0.01 && P.hookT <= 0 && !flying()) { G.arc.unshift(P.y); if (G.arc.length > 12) G.arc.pop(); }
+  else if (G.arc.length) G.arc.length = 0;
+
+  /* --------------------------------- world -------------------------------- */
+  /* a slow, relaxed start that eases into the sprint.  The first EASE_IN units
+     (10,500m) are held at walking pace so the opening is genuinely calm, then a
+     smoothstep carries the pace the rest of the way to the tower. */
+  const t = clamp((G.road - CFG.EASE_IN) / (CFG.RAMP - CFG.EASE_IN), 0, 1);
+  const ease = t * t * (3 - 2 * t);
+  G.speed = CFG.SPEED + (CFG.MAX_SPEED - CFG.SPEED) * ease;
+  G.spd = G.speed * (G.slowT > 0 ? CFG.SLOW_SCALE : 1);
+  G.distance += G.spd;
+  if (!G.boss) G.road += G.spd;
+  G.meters = Math.min(CFG.FINISH, Math.floor(G.road * CFG.M_PER_UNIT));
+  G.score = Math.floor(G.distance * 0.025) + G.bonus;
+  if (G.meters >= CFG.FINISH) { win(); return; }
+  /* checkpoints: a snapshot every 10,000m, so a crash is never a total loss */
+  const cpN = Math.floor(G.meters / CFG.CHECKPOINT);
+  if (cpN > G.cpN) { G.cpN = cpN; writeCheckpoint(); G.cpFlash = 90; Snd.sfx.buy(); toast("CHECKPOINT " + fmtM(cpN * CFG.CHECKPOINT) + "m SAVED"); }
+  if (!G.boss && G.bossIdx < BOSSES.length && G.meters >= BOSSES[G.bossIdx].at) bossStart(G.bossIdx);
+  if (G.boss) { bossUpdate(); if (P.dead) return; }
+  if (--G.itemT <= 0) { G.itemT = G.boss ? ri(30, 56) : ri(130, 300); spawnItems(!!G.boss); }
+  for (let i = G.items.length - 1; i >= 0; i--) {
+    const it = G.items[i], ib = [it.x, it.y, it.w, it.h];
+    it.x -= G.spd;
+    if (it.x + it.w < -24) { G.items.splice(i, 1); continue; }
+    /* PRO's magnet: a coin inside the radius is reeled into the dino's hands,
+       so the high row you would have had to jump for comes to you instead */
+    const mag = magnet();
+    if (mag > 0 && it.k === "coin") {
+      const dx = (P.x + 22) - it.x, dy = (GROUND - 26 - P.y) - it.y, d = Math.sqrt(dx * dx + dy * dy);
+      if (d < mag && d > 0.5) { it.x += dx / d * CFG.MAG_PULL; it.y += dy / d * CFG.MAG_PULL; }
+    }
+    const db = dinoBoxes();
+    /* The board rides higher than the road, so on the deck the dino's reach
+       hangs down to the tarmac: hovering must never mean sailing over the low
+       coin row.  The high row still wants a hop, exactly as it does on foot. */
+    const boxes = flying()
+      ? [[db[0][0], db[0][1], db[0][2], GROUND - 6 - db[0][1]]]
+      : db;
+    if (boxes.some(b => hitBox(b, ib))) { collect(it); G.items.splice(i, 1); }
+  }
+  if (G.score >= G.flashPeak + 100) { G.flashPeak = Math.floor(G.score / 100) * 100; G.flash = 22; Snd.sfx.point(); }
+  const phase = Math.floor(G.score / CFG.NIGHT_AT);          /* dusk milestone */
+  if (phase !== G.nightPhase) { G.nightPhase = phase; setNight(phase % 2 === 1); G.flash = 22; Snd.sfx.point(); }
+
+  for (let i = G.obs.length - 1; i >= 0; i--) {
+    const o = G.obs[i];
+    if (o.fly && o.fanim++ % 6 === 0) o.f = (o.f + 1) % 2;
+    if (o.dead) {
+      o.vx += 0.12; o.x += o.vx; o.y += o.vy;
+      if (o.y < -60 || o.x > WW + 40) G.obs.splice(i, 1);
+      continue;
+    }
+    o.x -= G.spd;
+    if (o.x + o.w < -30) G.obs.splice(i, 1);
+  }
+  maybeSpawn();
+
+  for (let i = G.shots.length - 1; i >= 0; i--) {
+    const s = G.shots[i];
+    s.x += 13;
+    if (G.frame % 2 === 0) G.parts.push({ x: s.x - 4, y: s.y + 2, vx: rnd(-1.5, -0.6), vy: rnd(-0.3, 0.3), life: 12, sz: 1, soft: true });
+    let hit = false;
+    /* a shot from the board carries its blast down to the road; a shot from the
+       dino's own hands is the little 18x5 missile it always was */
+    const sb = [s.x, s.y, 18, s.board ? Math.max(5, GROUND - s.y) : 5];
+    const b = G.boss;
+    if (b && hitBox(sb, bossBox(b))) { bossHit(1, s.x, s.y); hit = true; }
+    for (const o of G.obs) {
+      if (o.dead) continue;
+      if (hitBox(sb, [o.x, o.y, o.w, o.h])) {
+        o.dead = true; o.vy = -4;
+        burst(o.x + o.w / 2, o.y + o.h / 2, 22, 3.4, 24);
+        G.bonus += 25; G.flash = 14; shake(3, 12); Snd.sfx.boom();
+        bumpCombo(1);
+        hit = true; break;
+      }
+    }
+    if (hit || s.x > WW + 24) G.shots.splice(i, 1);
+  }
+
+  /* ---------------------------- grind & collide --------------------------- */
+  tryGrind();
+  /* incognito: the dino is intangible, so cacti and birds simply pass through */
+  if (phasing()) {
+    for (const o of G.obs) {
+      if (o.dead || o.ridden || !hitsObstacle(o)) continue;
+      o.dead = true; o.vx = 1.6; o.vy = -3;
+      burst(o.x + o.w / 2, o.y + o.h / 2, 10, 2.2, 18, mixHex(SOFT, PAPER, 0.3));
+      G.bonus += 10;
+    }
+  } else if (P.shield <= 0 && !P.grind && P.hookT <= 0) for (const o of G.obs) {
+    if (o.dead || o.ridden) continue;
+    if (hitsObstacle(o)) {
+      /* the hoverboard takes the hit so the run does not */
+      if (flying()) {
+        loseBoard();
+        for (const q of G.obs) if (!q.dead && q.x + q.w > P.x - 20 && q.x < P.x + 120) {
+          q.dead = true; q.vx = 2.4; q.vy = -5;
+        }
+        return;
+      }
+      gameOver(pick(REASONS)); return;
+    }
+  }
+}
+
+/* --------------------------- buttons & the shop --------------------------- */
+const ui = [];
+function hitUI(x, y) {
+  for (let i = ui.length - 1; i >= 0; i--) {
+    const b = ui[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b;
+  }
+  return null;
+}
+/* A raised pixel panel: hard 2px ink border, a soft drop shadow to lift it off
+   the paper, and a hairline inner rule so the content has a margin to sit on. */
+function panel(x, y, w, h) {
+  R(x + 2, y + 3, w, h, mixHex(INK, PAPER, 0.86));          /* drop shadow */
+  R(x, y, w, h, PAPER);
+  R(x, y, w, 2, INK); R(x, y + h - 2, w, 2, INK);
+  R(x, y, 2, h, INK); R(x + w - 2, y, 2, h, INK);
+  R(x + 4, y + 4, w - 8, 1, mixHex(INK, PAPER, 0.88));      /* inner hairline */
+}
+/* A button reads as a physical key: a filled face when active, a hairline bevel
+   and a shadow when idle, so the panel has depth without adding colour. */
+function button(x, y, w, h, id, label, size, hot) {
+  ui.push({ x, y, w, h, id });
+  const s = size || 10;
+  if (hot) {
+    R(x, y, w, h, INK);
+    R(x + 2, y + 2, w - 4, 1, mixHex(PAPER, INK, 0.35));    /* top bevel */
+  } else {
+    R(x + 1, y + 2, w, h, mixHex(INK, PAPER, 0.82));        /* shadow */
+    R(x, y, w, h, PAPER);
+    R(x, y, w, 1, mixHex(INK, PAPER, 0.55));                /* top highlight */
+    R(x, y + h - 1, w, 1, mixHex(INK, PAPER, 0.7));         /* bottom shade */
+  }
+  R(x, y, w, 2, INK); R(x, y + h - 2, w, 2, INK);
+  R(x, y, 2, h, INK); R(x + w - 2, y, 2, h, INK);
+  TXT(label, x + w / 2, y + h / 2 + s * 0.36, s, hot ? PAPER : INK, "center", 1.2);
+}
+/* A section heading with a rule that runs to the panel edge: the one bit of
+   structure every panel shares, so the menus read as a family. */
+function heading(x, y, w, label, col) {
+  TXT(label, x + 12, y, 9, col || INK, "left", 2.2);
+  const tw = TW(label, 9, 700);
+  R(x + 12 + tw + 10, y - 3, w - 24 - tw - 10, 1, mixHex(INK, PAPER, 0.82));
+}
+/* the small gold corner ticks that frame a card; red on the game-over card */
+function ticks(x, y, w, h, col) {
+  const t = (tx, ty) => { R(tx, ty, 6, 1, col); R(tx, ty, 1, 6, col); };
+  t(x + 5, y + 5); t(x + w - 11, y + 5);
+  t(x + 5, y + h - 11); t(x + w - 11, y + h - 11);
+}
+function toWorld(e) {
+  const r = shell.getBoundingClientRect();
+  /* getBoundingClientRect is CSS px but S counts device px, so taps used to be
+     scaled by the pixel ratio and every button below-right of centre missed */
+  const k = CSS || r.width / WW;
+  return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
+}
+function shopMsg(m) { G.shopMsg = m; G.shopMsgT = 100; }
+function openShop(back) {
+  G.shopBack = back === "over" ? "over" : "ready";
+  G.state = "shop"; G.shopSel = skinIndex(save.skin);
+  G.shopMsg = ""; G.shopMsgT = 0;
+  Snd.sfx.click();
+}
+function buyBoardPack() {
+  G.shopSel = SKINS.length;
+  if (save.coins < CFG.BOARD_COST) {
+    shopMsg("NOT ENOUGH COINS - NEED " + (CFG.BOARD_COST - save.coins));
+    Snd.sfx.deny(); return;
+  }
+  save.coins -= CFG.BOARD_COST;
+  save.boards = Math.min(99, save.boards + CFG.BOARD_PACK);
+  persist();
+  shopMsg("+" + CFG.BOARD_PACK + " HOVERBOARDS  (" + save.boards + " IN STOCK)");
+  Snd.sfx.buy();
+}
+function closeShop() { G.state = G.shopBack; G.shopSel = -1; G.shopMsg = ""; Snd.sfx.click(); }
+function shopPick(i) {
+  if (i === SKINS.length) { buyBoardPack(); return; }
+  if (i < 0 || i >= SKINS.length) return;
+  const sk = SKINS[i];
+  G.shopSel = i;
+  if (save.owned.indexOf(sk.id) === -1) {
+    if (save.coins < sk.cost) { shopMsg("NOT ENOUGH COINS - NEED " + (sk.cost - save.coins)); Snd.sfx.deny(); return; }
+    save.coins -= sk.cost; save.owned.push(sk.id); save.skin = sk.id;
+    persist(); shopMsg("UNLOCKED " + sk.name); Snd.sfx.buy();
+    return;
+  }
+  if (save.skin !== sk.id) { save.skin = sk.id; persist(); shopMsg("EQUIPPED " + sk.name); Snd.sfx.buy(); return; }
+  shopMsg(sk.name + " IS ALREADY EQUIPPED");
+}
+function shopFlip(d) {
+  /* land on the first tile of the target page; shopPage() derives the page
+     back from G.shopSel, so there is nothing else to keep in step */
+  const next = Math.max(0, Math.min(shopPages() - 1, shopPage() + d));
+  G.shopSel = next * SHOP_PER;
+  Snd.sfx.click();
+}
+function onUI(b) {
+  if (b.id === "shopprev") { shopFlip(-1); return; }
+  if (b.id === "shopnext") { shopFlip(1); return; }
+  if (b.id === "startbtn") {
+    /* the title card's START / RETRY: resume a banked checkpoint, or begin fresh */
+    if (G.state === "ready") { Snd.init(); Snd.resume(); Snd.sfx.click(); }
+    if (checkpointAt()) resume(); else start();
+    return;
+  }
+  if (b.id === "shop") { openShop(G.state === "over" ? "over" : "ready"); return; }
+  if (b.id === "proui") { openPro(); return; }
+  if (b.id === "newrun") { clearCheckpoint(); start(); Snd.sfx.click(); return; }
+  if (b.id === "close") { closeShop(); return; }
+  if (b.id === "proclose") { closePro(); return; }
+  if (b.id === "proon") { activatePro(); return; }
+  if (b.id === "boardpack") { buyBoardPack(); return; }
+  if (b.id.indexOf("skin:") === 0) shopPick(+b.id.slice(5));
+}
+
+/* --------------------------------- render --------------------------------- */
+/* A mystery box on the track: a bordered square with a halo, lettered [H], [I]
+   or carrying the rocket sprite.  Coins keep their Wi-Fi arcs. */
+function mysteryBox(it, label, col, spr) {
+  const bob = Math.sin(G.frame / 8 + it.x * 0.1) * 1.5;
+  const w = 20, h = 20, x = it.x - 4, y = it.y - 4 + bob;
+  const pulse = 0.5 + 0.5 * Math.sin(G.frame / 6 + it.x * 0.1);
+  disc(x + w / 2, y + h / 2, 12 + pulse, mixHex(col, PAPER, 0.88));
+  R(x, y, w, h, PAPER);
+  R(x, y, w, 1, col); R(x, y + h - 1, w, 1, col);
+  R(x, y, 1, h, col); R(x + w - 1, y, 1, h, col);
+  R(x + 3, y + 3, w - 6, 1, mixHex(col, PAPER, 0.7));
+  if (spr) SPT(spr, it.x, it.y + bob, 0, 0, col);
+  else TXT(label, x + w / 2, y + h / 2 + 4, 12, col, "center", 0.6);
+}
+function drawItems() {
+  for (const it of G.items) {
+    if (it.k === "board") mysteryBox(it, "H", GOLD, null);
+    else if (it.k === "spy") mysteryBox(it, "I", SOFT, null);
+    else if (it.k === "rocket") mysteryBox(it, "", RED, "rocket");
+    else SPT(ITEM[it.k].spr, it.x, it.y, 0);
+  }
+}
+function drawBoss() {
+  const b = G.boss;
+  if (b) {
+    const col = b.hurt > 0 ? RED : INK, d = b.d;
+    if (d.id === "router") {
+      SPT("router", b.x, b.y, 0, 0, col);
+      if (b.hurt === 0 && (G.frame / 8 | 0) % 3 === 0) R(b.x - 8, b.y + 18, 6, 2, RED);
+      /* a spinning buffering ring over the antennas, like a loading spinner */
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU + G.frame / 12;
+        R(b.x + d.w / 2 + Math.cos(a) * 17 - 1, b.y - 11 + Math.sin(a) * 5 - 1, 2, 2, mixHex(RED, PAPER, i / 12));
+      }
+    } else if (d.id === "queen") {
+      SPT("ptero", b.x, b.y, (b.t / 7 | 0) % 2, b.dive > 0 ? 0.3 : 0, col, b.dive > 0 ? 1.3 : 1);
+      if (b.phase > 0) R(b.x - 4, b.y - 6, 50, 3, GOLD);
+    } else if (d.id === "golem") {
+      SPT("golem", b.x, b.y, 0, 0, col);
+      if (b.phase > 0) R(b.x - 6, b.y - 4, 68, 2, RED);
+    } else if (d.id === "mecha") {
+      SPT("idle", b.x, b.y, (b.t / 8 | 0) % 2, 0, col, 2);
+      R(b.x + 46, b.y + 8, 30, 5, CYAN);           /* the visor */
+      R(b.x + 64, b.y + 10, 6, 4, b.hurt > 0 ? PAPER : RED);
+      R(b.x + 2, b.y + 70, 10, 16, CYAN); R(b.x + 68, b.y + 70, 10, 16, CYAN);
+    } else if (d.id === "meteor") {
+      SPT("meteor", b.x, b.y, 0, 0, col);
+      R(b.x - 2, b.y + 50, 50, 2, RED);
+      R(b.x + 4, b.y + 53, 38, 1, mixHex(RED, PAPER, 0.5));
+    }
+  }
+  for (const w of G.waves) {
+    if (w.hold > 0) continue;                        /* not on screen yet */
+    if (w.dead) { R(w.x, w.y, w.w, w.h, FAINT); continue; }
+    if (w.kind === "wifi") SPT("wave", w.x, w.y, 0, 0, RED);
+    else if (w.kind === "laser") { R(w.x, w.y, w.w, w.h, RED); R(w.x, w.y + 1, w.w, w.h - 2, PALE); }
+    else if (w.kind === "minion") SPT("ptero", w.x, w.y, (G.frame / 6 | 0) % 2, 0, RED, 0.5);
+    else { R(w.x, w.y + 3, w.w, w.h - 3, INK); R(w.x + 4, w.y, w.w - 8, 4, INK); R(w.x, w.y, w.w, 2, RED); }
+  }
+  if (G.tower !== null && G.tower > -60) {
+    SPT("tower", G.tower, GROUND - 104, 0, 0, CYAN);
+    for (let i = 0; i < 3; i++) disc(G.tower + 20, GROUND - 82, 3 + i * 3, mixHex(CYAN, PAPER, 0.72 - i * 0.2));
+  }
+}
+function drawGround() {
+  R(-4, GROUND, WW + 8, 2, INK);
+  const off = G.distance % STRIP;
+  for (const p of PEBS) {
+    for (const dx of [0, STRIP]) {
+      const x = p[0] - off + dx;
+      if (x < -20 || x > WW + 20) continue;
+      R(x, GROUND + p[1], p[2], p[3], PEBBLE);
+    }
+  }
+}
+function drawObstacles() {
+  for (const o of G.obs) {
+    if (o.fly) { SPT("ptero", o.x, o.y, o.f); continue; }
+    for (let i = 0; i < o.n; i++) SPT(o.k, o.x + i * OBST[o.k].w, o.y, 0);
+  }
+}
+function dinoKey() {
+  if (P.dead) return "crash";
+  if (P.duck) return "duck";
+  if (P.y > 0.01 || P.grind) return "idle";
+  if (G.state === "run") return ((G.frame / Math.max(2, Math.round(36 / Math.max(4, G.speed)))) | 0) % 2 ? "run2" : "run1";
+  return G.blink % 210 < 12 ? "blink" : "idle";
+}
+function drawDino() {
+  const key = dinoKey();
+  const feet = GROUND - P.y;
+  /* On a board a jump is a 360 kickflip, so the spin drives the rotation; the
+     rider also leans into the run — a touch with the speed, a touch against
+     the suspension — because a rigid sprite glued to a deck never reads as
+     somebody balancing on something. */
+  const spin = flying() && P.spin > 0 ? -TAU * (1 - P.spin / CFG.HOVER_SPIN) : 0;
+  const lean = flying()
+    ? clamp(0.03 + 0.05 * clamp((G.speed - CFG.SPEED) / (CFG.MAX_SPEED - CFG.SPEED), 0, 1) - P.bobV * 0.02, -0.03, 0.12)
+    : 0;
+  const rot = spin + (P.flip >= 0 ? -TAU * P.flip : 0) + lean;
+  const spr = skinSprite(key);
+  const dx = key === "duck" ? P.x - 6 : P.x;
+  const dy = key === "duck" ? feet - SPR.duck.h : feet - 43;
+  /* The hoverboard: a deck on springs, the pool of light it throws on the road,
+     jets that answer the throttle, and the whole rig up with the dino through a
+     kickflip — a deck parked on the road while he spins overhead reads as a bug,
+     and a board with no shadow under it reads as a painting. */
+  if (flying()) {
+    const hop = Math.max(0, P.y - deckY());
+    const bx = dx + (SPR[key].w - 46) / 2;
+    const by = GROUND - 7 + P.bob + Math.sin(G.frame / 11) * 1.6 - hop;
+    const glow = 0.5 + 0.5 * Math.sin(G.frame / 6);
+    /* the pool of light under it: the cue that says "floating" louder than any
+       amount of hovering, tightening and fading as the deck climbs away */
+    const lift = clamp(1 - hop / 90, 0.3, 1);
+    disc(bx + 23, GROUND, 19 + 7 * lift, mixHex(RED, PAPER, 0.88 - 0.08 * lift), 1.6 + 2 * lift);
+    disc(bx + 23, GROUND, (19 + 7 * lift) * 0.55, mixHex(CYAN, PAPER, 0.9 - 0.12 * lift), 1 + 1.4 * lift);
+    /* the two hover jets, flickering under the deck and stretching under load */
+    const thrust = clamp(P.vy / 7, -0.3, 1.2);
+    for (const jx of [bx + 7, bx + 31]) {
+      SPT("jet", jx, by + 3, 0, 0, mixHex(CYAN, PAPER, 0.25 + 0.4 * glow), 1 + 0.5 * thrust);
+      SPT("jet", jx, by + 1, 0, 0, mixHex(PALE, PAPER, 0.1 + 0.3 * (1 - glow)), 0.6 + 0.3 * thrust);
+    }
+    R(bx - 3, by - 3, 52, 12, mixHex(RED, PAPER, 0.84));      /* soft neon-red hover glow */
+    SPT("board", bx, by, 0, lean * 0.6, RED);                /* a red/neon deck, tilting */
+    R(bx + 4, by + 1, 38, 1, mixHex(CYAN, PAPER, 0.2 + 0.2 * glow));
+  }
+  if (save.skin === "gold" || P.shield > 0) {          /* the Golden Dino's aura */
+    const pulse = 0.5 + 0.5 * Math.sin(G.frame / 7);
+    const col = P.shield > 0 ? mixHex(GOLD, PAPER, 0.35 - 0.2 * pulse) : mixHex(GOLD, PAPER, 0.78 - 0.18 * pulse);
+    const bx = dx + SPR[key].w / 2, by = dy + SPR[key].h / 2;
+    const r = 30 + pulse * 4;
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * TAU + G.frame / 40;
+      R(bx + Math.cos(a) * r - 1, by + Math.sin(a) * r - 1, 2, 2, col);
+    }
+    if (P.shield > 0) disc(bx, by, 26, mixHex(GOLD, PAPER, 0.6));
+  }
+  /* incognito: the dino fades toward the paper, and wears the hat and shades */
+  const ghost = P.spy > 0 ? clamp(P.ghost, 0, 1) : 0;
+  const body = ghost > 0 ? mixHex(INK, PAPER, ghost * 0.72) : INK;
+  if (key === "duck") SPT(spr, dx, dy, ((G.frame / 6) | 0) % 2, rot, body);
+  else SPT(spr, dx, dy, 0, rot, body);
+  if (P.spy > 0 && spin === 0 && P.flip < 0) {
+    const off = key === "duck" ? SKIN_HEAD.duck : SKIN_HEAD.stand;
+    SPT("spyhat", dx + off[0] - 8, dy + off[1] - 11, 0, 0, mixHex(INK, PAPER, ghost * 0.72));
+    SPT("shades", dx + off[0] - 2, dy + off[1] + 1, 0, 0, mixHex(INK, PAPER, ghost * 0.72));
+  }
+  /* the ghost clock, ticking down over the dino's head */
+  if (P.spy > 0) {
+    const left = Math.max(0, P.spyT / 1000);
+    TXT(left.toFixed(1) + "s", dx + SPR[key].w / 2, dy - 6, 8, mixHex(SOFT, PAPER, 0.15), "center", 1.2);
+    if (P.spyT < 1500 && ((G.blink / 4) | 0) % 2 === 0) Snd.sfx.ghost();
+  }
+}
+function drawEffects() {
+  for (const s of G.shots) {
+    R(s.x, s.y, 16, 5, INK);
+    R(s.x + 16, s.y + 1, 5, 3, INK);
+    R(s.x - 5, s.y + 1, 4, 3, FAINT);
+  }
+  for (const p of G.parts) R(p.x, p.y, p.sz, p.sz, p.col || (p.soft ? FAINT : INK));
+}
+/* ------------------------------- the HUD ----------------------------------
+   One table drives the whole top strip, so no two things can silently land on
+   top of each other.  The strip is three columns that may not cross:
+
+     left   x 8 .. HUD.colR      wallet, rockets, hoverboards, incognito
+     centre the progress bar and the centred alerts, and nothing else
+     right  right-aligned at HUD.R, but only on rows above the bar
+
+   ...and a stack of horizontal bands that may not either.  The DOM chips
+   (GO PRO / PAUSE / SOUND) sit above the canvas, so the right cluster starts
+   below them at HUD.rightA. */
+const HUD = {
+  L: 8, R: WW - 8,
+  colR: 122,          /* nothing in the left cluster may cross this          */
+  rowA: 32, rowB: 54, /* the left cluster's two text baselines               */
+  iconA: 20, iconB: 42,
+  rA: 26, rB: 48,     /* the right cluster's two baselines                   */
+  chargeY: 59,        /* the limited weapons' recharges, under the score     */
+  chargeY2: 68,       /* ...one per line, so the two can never collide        */
+  barW: 124, barY: 58,
+  seedY: 74,          /* checkpoint / best-metres, centred                    */
+  toastY: 88,
+  alertY: 102,        /* boss warning, checkpoint flash, bullet time          */
+  tagY: 78            /* the CERTIFIED LEGEND tag, bottom-left                */
+};
+HUD.barX = Math.round((WW - HUD.barW) / 2);
+HUD.barR = HUD.barX + HUD.barW;
+
+function drawHud() {
+  const pad = n => String(Math.max(0, Math.floor(n))).padStart(5, "0");
+  /* ---- top-left: the wallet and the arsenal, on two tidy rows ---- */
+  SPT("wifi", HUD.L, HUD.iconA, 0);
+  TXT(String(save.coins), HUD.L + 16, HUD.rowA, 13, INK, "left");
+  if (save.pro) TXT("x" + CFG.PRO_COINS, HUD.L + 16 + TW(String(save.coins), 13) + 4, HUD.rowA, 8, GOLD, "left");
+  SPT("rocket", 84, HUD.iconA + 1, 0);
+  TXT("x" + G.ammo, 101, HUD.rowA, 13, G.ammo > 0 ? INK : FAINT, "left");
+  const stock = P.board > 0 ? 1 : save.boards;
+  if (stock > 0 || P.board > 0) {
+    SPT("board", HUD.L, HUD.iconB, 0, 0, P.board > 0 ? GOLD : INK, 0.62);
+    TXT("x" + stock, HUD.L + 32, HUD.rowB, 11, P.board > 0 ? GOLD : INK, "left");
+  }
+  if (P.spy > 0) {
+    SPT("pkSpy", 74, HUD.iconB, 0, 0, SOFT, 0.62);
+    TXT((P.spyT / 1000).toFixed(1), 94, HUD.rowB, 10, GOLD, "left");
+  }
+  /* ---- top-right: the high score over the running score ---- */
+  const best = pad(save.best);
+  TXT(best, HUD.R, HUD.rA, 12, FAINT, "right");
+  TXT("HI", HUD.R - TW(best, 12) - 4, HUD.rA, 12, FAINT, "right");
+  const big = 18 + (G.flash > 0 ? 6 * (G.flash / 22) : 0);
+  TXT(pad(G.score), HUD.R, HUD.rB, big, INK, "right");
+  /* ---- the centre column ---- */
+  if (G.state !== "win") drawProgress();
+  if (G.boss) drawBossBar();
+  if (G.slowT > 0) TXT("BULLET TIME", WW / 2, HUD.alertY, 10, CYAN, "center", 2);
+  /* the limited weapons count their own recharges down, one per line under the
+     score, so the two readouts can never collide with each other */
+  if (G.slowCd > 0 && G.state === "run")
+    TXT("SLOW " + (G.slowCd / 1000).toFixed(1) + "s", HUD.R, HUD.chargeY, 7, FAINT, "right");
+  if (G.beamCd > 0 && G.beamT <= 0 && G.state === "run")
+    TXT("LASER " + (G.beamCd / 1000).toFixed(1) + "s", HUD.R, HUD.chargeY2, 7, FAINT, "right");
+  if (G.toastT > 0) {
+    const blink = G.toastT > 100 ? ((G.blink / 6) | 0) % 2 === 0 : true;
+    if (blink) TXT(G.toast, WW / 2, HUD.toastY, 12, RED, "center", 1.6);
+  }
+  if (save.title) TXT(save.title, HUD.L, HUD.tagY, 8, GOLD, "left", 2);
+}
+/* the 100,000m journey: dino marker, progress bar, checkpoint and boss flags */
+function drawProgress() {
+  const w = HUD.barW, x = HUD.barX, y = HUD.barY;
+  const p = clamp(G.meters / CFG.FINISH, 0, 1);
+  R(x, y, w, 3, FAINT);
+  R(x, y, Math.max(0, w * p), 3, p >= 1 ? GOLD : INK);
+  for (let m = CFG.CHECKPOINT; m < CFG.FINISH; m += CFG.CHECKPOINT) {   /* checkpoints */
+    const t = x + w * (m / CFG.FINISH);
+    R(t, y - 2, 1, 7, m <= G.meters ? GOLD : FAINT);
+  }
+  for (let i = 0; i < BOSSES.length; i++) {                            /* boss gates */
+    R(x + w * (BOSSES[i].at / CFG.FINISH) - 1, y - 3, 3, 9, G.bosses[i] ? GOLD : RED);
+  }
+  SPT("wifi", HUD.barR + 6, y - 3, 0);
+  TXT("100,000m", HUD.barR + 20, y + 6, 7, SOFT, "left");
+  SPT("classic_idle", x + w * p - 8, y - 17, 0, 0, p >= 1 ? GOLD : INK, 0.4);
+  TXT(Math.floor(p * 100) + "%", x - 10, y + 7, 9, p >= 1 ? GOLD : INK, "right");
+  const cp = checkpointAt();
+  if (cp) TXT("CP " + fmtM(cp) + "m", WW / 2, HUD.seedY, 7, GOLD, "center", 0.6);
+  else if (save.bestM > 0) TXT("BEST " + fmtM(save.bestM) + "m", WW / 2, HUD.seedY, 7, FAINT, "center", 0.6);
+  if (G.cpFlash > 0 && (G.cpFlash / 6 | 0) % 2 === 0)
+    TXT("CHECKPOINT " + fmtM(G.cpN * CFG.CHECKPOINT) + "m", WW / 2, HUD.alertY, 12, GOLD, "center", 2);
+}
+function drawBossBar() {
+  /* narrow enough to clear the left cluster (which ends at HUD.colR) and set
+     high enough that its countdown never lands on the progress bar */
+  const b = G.boss, w = 156, x = (WW - w) / 2, y = 34;
+  R(x - 1, y - 1, w + 2, 8, PAPER);
+  R(x, y, w, 6, FAINT);
+  R(x, y, w * clamp(b.hp / b.max, 0, 1), 6, b.hurt > 0 ? PALE : RED);
+  TXT("BOSS " + (b.i + 1) + "/5 · " + b.d.name, WW / 2, y - 4, 8, INK, "center", 1.4);
+  if (b.d.id === "meteor") {                    /* it is coming down: say how long */
+    const v = Math.max(0.5, 0.07 + 0.0006 * b.t);
+    TXT("IMPACT IN " + Math.max(0, Math.ceil((GROUND - b.d.h - b.y) / v / 60)) + "s", WW / 2, y + 16, 9, RED, "center", 1.6);
+  }
+  if (G.warn > 0 && ((G.blink / 5) | 0) % 2 === 0)
+    TXT(b.i === 0 ? "⚠️ ROUTER BOSS ⚠️" : "WARNING: BOSS DETECTED!", WW / 2, HUD.alertY, 14, RED, "center", 2.4);
+}
+/* a pulsing ring the instant before a parry would connect: the timing tell */
+function drawParryHint() {
+  if (G.state !== "run" || P.dead) return;
+  if (!parryThreat()) return;
+  const r = 10 + ((G.blink / 4) | 0) % 3, cy = GROUND - 24 - P.y;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU + G.blink / 20;
+    R(P.x + 42 + Math.cos(a) * r, cy + Math.sin(a) * r, 2, 2, CYAN);
+  }
+}
+/* the jump reads as an arc: a dotted cyan trail of where the dino has been */
+function drawTrajectory() {
+  if (G.arc.length < 2) return;
+  for (let i = 0; i < G.arc.length; i++) {
+    const y = GROUND - 22 - G.arc[i];
+    const x = P.x + 2 - i * 3.4;
+    const a = 1 - i / (G.arc.length + 1);
+    R(x, y, 2, 2, mixHex(CYAN, PAPER, 0.18 + 0.5 * a));
+  }
+}
+/* the grappling rope, its anchor, and the GRAPPLE! shout.
+   The rope is a solid ink line with a small sag, drawn segment by segment from
+   the dino's hands all the way up to the cloud it has caught — a continuous
+   line reads as a rope where a dotted one reads as sparks. */
+function drawHook() {
+  if (P.hookT <= 0 || !P.hook) return;
+  const dx = P.x + 20, dy = GROUND - P.y - 40;
+  const hx = P.hook.x, hy = P.hook.y;
+  const n = 26, rope = mixHex(INK, PAPER, 0.06);
+  let px = dx, py = dy;
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    const x = dx + (hx - dx) * t;
+    const y = dy + (hy - dy) * t + Math.sin(t * Math.PI) * 6;   /* a little slack */
+    const sx = x - px, sy = y - py, len = Math.max(1, Math.hypot(sx, sy));
+    for (let s = 0; s < len; s += 2) {
+      const u = s / len;
+      R(px + sx * u - 1, py + sy * u - 1, 3, 2, rope);
+    }
+    px = x; py = y;
+  }
+  /* the hook itself, biting into the cloud */
+  R(hx - 5, hy - 2, 10, 3, INK);
+  R(hx - 5, hy - 5, 2, 4, INK);
+  R(hx + 3, hy - 5, 2, 4, INK);
+  R(hx - 1, hy + 1, 2, 4, RED);
+  TXT("GRAPPLE!", WW / 2, 92, 17, RED, "center", 2.6);
+}
+/* the Laser Roar beam, fired from the dino's mouth across the whole screen */
+function drawBeam() {
+  if (G.beamT <= 0) return;
+  const a = G.beamT / CFG.LASER_MS, y = G.beamY, hgt = 3 + 6 * a;
+  R(0, y - hgt / 2, P.x + 22, hgt, mixHex(CYAN, PAPER, 0.3));
+  R(P.x + 18, y - hgt / 2, WW - P.x, hgt, CYAN);
+  R(P.x + 18, y - 1, WW - P.x, 2, PAPER);
+  for (let i = 0; i < 5; i++) R(P.x + 24 + i * 6, y - 6 + i, 3, 12 - i * 2, mixHex(CYAN, PAPER, 0.45));
+}
+function drawReady() {
+  /* a proper title card: the logo is framed and the whole menu reads as one
+     object sitting on the horizon rather than as loose text */
+  const w = 250, h = 132, x = (WW - w) / 2, y = 26;
+  panel(x, y, w, h);
+  ticks(x, y, w, h, GOLD);
+  TXT("OFFLINE MODE", x + w / 2, y + 18, 7, SOFT, "center", 2.6);
+  TXT("DINO.EXE", x + w / 2, y + 50, 32, INK, "center", 3.4);
+  R(x + 30, y + 58, w - 60, 1, mixHex(INK, PAPER, 0.82));
+  TXT("B U F F E R I N G   R U N", x + w / 2, y + 72, 9, GOLD, "center", 1.8);
+  TXT("100,000m · 5 BOSSES · 1 WI-FI TOWER", x + w / 2, y + 84, 7, FAINT, "center", 0.8);
+
+  button(x + 16, y + 92, 92, 18, "startbtn", checkpointAt() ? "▶  RESUME" : "▶  START", 9, true);
+  button(x + 116, y + 92, 56, 18, "shop", "SHOP", 8);
+  button(x + 178, y + 92, 56, 18, "proui", "GO PRO", 8, save.pro);
+
+  if (checkpointAt()) {
+    TXT("CHECKPOINT " + fmtM(checkpointAt()) + "m BANKED", WW / 2, 176, 8, GOLD, "center", 1.4);
+    button(122, 184, 68, 17, "startbtn", "RESUME", 8.5, true);
+    button(194, 184, 68, 17, "newrun", "NEW RUN", 8.5);
+  } else if (((G.blink / 30) | 0) % 2 === 0) {
+    TXT(touchUI ? "TAP ANYWHERE TO START" : "PRESS SPACE TO START", WW / 2, 180, 11, INK, "center", 1.4);
+  }
+  TXT(touchUI ? "JUMP · BACKFLIP · SLIDE/GRIND · PARRY/ROCKET · SLOW · DOUBLE-TAP = HOVERBOARD"
+              : "SPACE JUMP · ↓ SLIDE · F PARRY · SHIFT SLOW · H HOVERBOARD · P PAUSE", WW / 2, 210, 7, FAINT, "center", 1);
+}
+function drawOver() {
+  if (G.t < G.restartAt) return;
+  const w = 250, h = 172, x = (WW - w) / 2, y = 14;
+  panel(x, y, w, h);
+  ticks(x, y, w, h, RED);
+  /* an authentic Chrome dialog: a blue title bar over the restored page */
+  const bh = 17;
+  R(x + 2, y + 2, w - 4, bh, "#3b6ea5");
+  R(x + 2, y + 2, w - 4, 1, "#6c9bd2");
+  TXT("Google Chrome", x + 9, y + 14, 8, "#ffffff", "left", 0.4);
+  TXT("✕", x + w - 9, y + 14, 9, "#dbe7f5", "right", 0);
+  TXT("Internet Connection Restored", x + 14, y + 36, 9, INK, "left", 0.2);
+  R(x + 14, y + 41, w - 28, 1, mixHex(INK, PAPER, 0.85));
+  TXT("Goodbye!", x + 14, y + 58, 14, INK, "left", 1.4);
+  TXT(G.reason, x + 14, y + 70, 6.5, SOFT, "left");
+  TXT("SCORE " + String(G.score).padStart(5, "0") + (G.newBest ? "  NEW BEST!" : "  BEST " + String(save.best).padStart(5, "0")),
+      x + 14, y + 84, 7.5, INK, "left", 0.6);
+  TXT(fmtM(G.meters) + "m of 100,000m  ·  " + G.bosses.filter(Boolean).length + "/5 bosses",
+      x + 14, y + 94, 6.5, FAINT, "left");
+  const cp = checkpointAt();
+  if (cp) TXT("CHECKPOINT " + fmtM(cp) + "m KEPT", x + 14, y + 106, 6.5, GOLD, "left", 0.6);
+  /* the buttons live inside the card, so it reads as one object you can act on */
+  if (cp) {
+    button(x + 12, y + 114, 118, 19, "startbtn", "RESTART / RECONNECT", 7, true);
+    button(x + 136, y + 114, 102, 19, "newrun", "NEW RUN", 8);
+  } else {
+    button(x + 12, y + 114, 226, 19, "startbtn", "RESTART / RECONNECT", 8, true);
+  }
+  button(x + 12, y + 138, 108, 18, "shop", "WARDROBE", 8);
+  button(x + 128, y + 138, 110, 18, "proui", "GO PRO", 8, save.pro);
+  if (((G.blink / 22) | 0) % 2 === 0)
+    TXT(touchUI ? "TAP TO RECONNECT" : "PRESS SPACE TO RECONNECT", WW / 2, y + h + 12, 9, cp ? GOLD : INK, "center", 1.2);
+}
+function drawWin() {
+  if (G.winT < 60) return;                    /* let the tower and the fanfare land first */
+  const w = 214, h = 84, x = 80, y = 42;
+  panel(x, y, w, h);
+  TXT("YOU SURVIVED 100,000 METERS", x + w / 2, y + 18, 10, INK, "center", 1.2);
+  TXT("CERTIFIED LEGEND", x + w / 2, y + 32, 12, GOLD, "center", 2);
+  SPT("tower", x + 16, y + 40, 0, 0, GOLD, 0.28);
+  TXT(save.owned.indexOf("gold") >= 0 ? "GOLDEN CROWN DINO" : "", x + 46, y + 54, 7, INK, "left");
+  SPT("wifi", x + 14, y + 58, 0);
+  TXT("+" + fmtM(CFG.WIN_COINS), x + 28, y + 68, 8, INK, "left");
+  TXT(String(G.score).padStart(5, "0") + " PTS", x + w - 14, y + 68, 8, INK, "right");
+  if (((G.blink / 22) | 0) % 2 === 0)
+    TXT(touchUI ? "TAP TO RUN IT AGAIN" : "PRESS SPACE TO RUN IT AGAIN", WW / 2, y + h + 15, 9.5, INK, "center", 1.4);
+  button(46, 172, 62, 20, "shop", "SHOP", 9);
+  button(116, 172, 62, 20, "proui", "GO PRO", 9, save.pro);
+}
+function drawPro() {
+  const w = 344, h = 213, x = (WW - w) / 2, y = 1;
+  panel(x, y, w, h);
+  TXT("👑 DINO PRO", x + 14, y + 24, 16, GOLD, "left", 2.2);
+  TXT(save.pro ? "ACTIVE" : "VIP PASS", x + w - 14, y + 24, 8, save.pro ? INK : SOFT, "right", 1.4);
+  R(x + 12, y + 30, w - 24, 1, FAINT);
+  heading(x, y + 42, w, "WHAT YOU GET", SOFT);
+  /* Eight perks will not fit as two-line rows in a 216-unit-tall world, so they
+     run as a two-column grid instead: every badge keeps its own column (CROWN is
+     much wider than 2x) and every name and blurb gets a fixed column of its own,
+     which is the only way eight of them can be read at all. */
+  const colW = (w - 24 - 12) / 2;
+  for (let i = 0; i < PERKS.length; i++) {
+    const p = PERKS[i];
+    const cx = x + 12 + (i % 2) * (colW + 12);
+    const ry = y + 48 + ((i / 2) | 0) * 32;
+    R(cx, ry, 3, 18, save.pro ? GOLD : FAINT);
+    const bw = Math.max(30, TW(p[0], 10, 700) + 8);
+    TXT(p[0], cx + 8, ry + 13, 10, save.pro ? GOLD : INK, "left", 0.4);
+    const tx = cx + 8 + bw + 6;
+    TXT(p[1], tx, ry + 10, 9, INK, "left", 0.6);
+    TXT(p[2], tx, ry + 21, 7, SOFT, "left");
+  }
+  /* the grid owns everything down to y+166, so the price / summary line sits a
+     clear 8 units below the last blurb instead of printing through it */
+  if (G.proMsgT > 0) TXT(G.proMsg, WW / 2, y + h - 33, 9, INK, "center", 0.8);
+  else if (save.pro) TXT("2x COINS · 2 REVIVES · BOARD · MAGNET · OVERCLOCK · 9s GHOST", WW / 2, y + h - 33, 7.5, GOLD, "center");
+  else TXT("FREE TEST — $0.99 ONE-TIME, NO PAYMENT TAKEN", WW / 2, y + h - 33, 7.5, SOFT, "center");
+  /* the price lives on its own line so the button label always fits its box,
+     and CLOSE keeps its own column instead of being overrun */
+  const cl = 54, gap = 8, bw2 = w - 32 - cl - gap, bcx = x + 16;
+  button(bcx, y + h - 22, bw2, 16, "proon", save.pro ? "DEACTIVATE PRO" : "ACTIVATE PRO", 8, save.pro);
+  button(x + w - 16 - cl, y + h - 22, cl, 16, "proclose", "CLOSE", 8, G.proMsg === "");
+}
+function drawShop() {
+  const w = 344, h = 213, x = (WW - w) / 2, y = 1;
+  panel(x, y, w, h);
+  TXT("SKIN SHOP", x + 14, y + 22, 15, INK, "left", 2.2);
+  SPT("wifi", x + w - 68, y + 12, 0);
+  TXT(String(save.coins), x + w - 52, y + 22, 13, INK, "left");
+  if (save.pro) TXT("x" + CFG.PRO_COINS, x + w - 52 + TW(String(save.coins), 13) + 4, y + 22, 8, GOLD, "left");
+  R(x + 12, y + 28, w - 24, 1, mixHex(INK, PAPER, 0.82));
+  heading(x, y + 38, w, "WARDROBE", SOFT);
+  /* the wardrobe is a paged grid: two columns of SHOP_COLS, four rows a page.
+     A page turn costs no panel height, so the wardrobe scales to any number
+     of skins without a row ever running into the pack or CLOSE below it. */
+  const pages = shopPages(), page = shopPage();
+  const first = page * SHOP_PER, last = Math.min(SKINS.length, first + SHOP_PER);
+  const colw = (w - 24 - 8) / SHOP_COLS;
+  for (let i = first; i < last; i++) {
+    const sk = SKINS[i], k = i - first, col = k % SHOP_COLS, row = (k / SHOP_COLS) | 0;
+    const rx = x + 12 + col * (colw + 8), rw = colw, ry = y + 42 + row * 28;
+    const owned = save.owned.indexOf(sk.id) >= 0, eq = save.skin === sk.id, sel = G.shopSel === i;
+    if (sel) R(rx, ry, rw, 26, mixHex(INK, PAPER, 0.9));
+    ui.push({ x: rx, y: ry, w: rw, h: 26, id: "skin:" + i });
+    if (sk.id === "gold" && eq) disc(rx + 14, ry + 13, 9, mixHex(GOLD, PAPER, 0.8));
+    SPT(sk.id + "_idle", rx + 5, ry + 3, 0, 0, null, 0.46);
+    TXT(sk.name, rx + 26, ry + 12, 9.5, INK, "left", 0.8);
+    TXT(sk.blurb, rx + 26, ry + 21, 6.5, SOFT, "left");
+    /* the status tag sits on the name line and the price on the blurb line,
+       so neither can ever run into the other in a 156px column */
+    if (eq) TXT("EQUIPPED", rx + rw - 6, ry + 12, 9, INK, "right", 1);
+    else if (owned) TXT("EQUIP", rx + rw - 6, ry + 12, 9, INK, "right", 1);
+    else {
+      SPT("wifi", rx + rw - 34, ry + 15, 0);
+      TXT(String(sk.cost), rx + rw - 6, ry + 21, 8, save.coins >= sk.cost ? INK : FAINT, "right");
+    }
+    if (sel) { R(rx, ry, rw, 1, INK); R(rx, ry + 25, rw, 1, INK); R(rx, ry, 1, 26, INK); R(rx + rw - 1, ry, 1, 26, INK); }
+  }
+  /* the hoverboard pack: a consumable row below the grid, same shape */
+  {
+    const rx = x + 12, rw = w - 24, ry = y + 42 + SHOP_ROWS * 28;
+    const sel = G.shopSel === SKINS.length, afford = save.coins >= CFG.BOARD_COST;
+    if (sel) R(rx, ry, rw, 26, mixHex(INK, PAPER, 0.9));
+    ui.push({ x: rx, y: ry, w: rw, h: 26, id: "boardpack" });
+    SPT("board", rx + 6, ry + 9, 0, 0, GOLD, 0.52);
+    TXT("HOVERBOARD PACK", rx + 34, ry + 12, 10, INK, "left", 0.8);
+    TXT("3 boards · H or double-tap to fly", rx + 34, ry + 21, 7, SOFT, "left");
+    if (save.boards > 0) TXT("IN STOCK " + save.boards, rx + rw - 10, ry + 17, 8, GOLD, "right", 1);
+    else { SPT("wifi", rx + rw - 78, ry + 8, 0); TXT(String(CFG.BOARD_COST), rx + rw - 10, ry + 17, 9, afford ? INK : FAINT, "right"); }
+    if (sel) { R(rx, ry, rw, 1, INK); R(rx, ry + 25, rw, 1, INK); R(rx, ry, 1, 26, INK); R(rx + rw - 1, ry, 1, 26, INK); }
+  }
+  if (G.shopMsgT > 0) TXT(G.shopMsg, WW / 2, y + h - 26, 9, INK, "center", 0.8);
+  else TXT(touchUI ? "TAP TO BUY OR EQUIP" : "↑↓←→ SELECT · ENTER BUY · P CLOSE", WW / 2, y + h - 26, 8, SOFT, "center");
+  /* the page turners share the bottom row with CLOSE, so the grid never grows */
+  if (pages > 1) {
+    button(x + 12, y + h - 20, 26, 15, "shopprev", "◀", 9, false);
+    button(x + 42, y + h - 20, 26, 15, "shopnext", "▶", 9, false);
+    TXT("PAGE " + (page + 1) + "/" + pages, x + 76, y + h - 9, 8, SOFT, "left", 0.6);
+  }
+  button(x + w - 80, y + h - 20, 68, 15, "close", "CLOSE", 8, G.shopSel >= SKINS.length + 1);
+}
+function drawPause() {
+  const w = 200, h = 56, x = (WW - w) / 2, y = 62;
+  panel(x, y, w, h);
+  TXT("PAUSED", WW / 2, y + 28, 18, INK, "center", 3);
+  TXT(touchUI ? "TAP TO RESUME" : "PRESS P TO RESUME", WW / 2, y + 44, 8, SOFT, "center");
+}
+/* A filled disc, or a squashed ellipse when `ry` is given — the hoverboard
+   throws a flat pool of light on the road with it. */
+function disc(cx, cy, r, col, ry) {
+  const b = ry === undefined ? r : ry;
+  for (let y = -b; y <= b; y++) {
+    const w = Math.floor(Math.sqrt(Math.max(0, r * r * (1 - (y * y) / (b * b)))));
+    R(cx - w, cy + y, w * 2 + 1, 1, col);
+  }
+}
+function drawSky() {
+  if (G.nightMix <= 0.02) return;
+  const mx = 104, my = 38, mr = 11;                 /* crescent moon, upper left */
+  disc(mx, my, mr, STAR);
+  disc(mx + 6, my - 3, mr - 2, PAPER);
+  for (const s of G.stars) {
+    if ((G.frame + s.seed) % 140 < 7) continue;     /* twinkle */
+    if (s.x > mx - 18 && s.x < mx + 18 && s.y > my - 18 && s.y < my + 18) continue;  /* keep the moon clear */
+    SPT("star", s.x, s.y, 0, 0, STAR, s.k);
+  }
+}
+function render() {
+  applyNight(G.nightMix);
+  ui.length = 0;
+  /* a full-screen panel owns the screen: fade the touch pad out from under it */
+  if (document.body && document.body.classList)
+    document.body.classList.toggle("modal", G.state === "pro" || G.state === "shop");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, CW, CH);
+  OX = G.shakeT > 0 ? Math.round(rnd(G.shakeM, -G.shakeM) * S) : 0;
+  OY = G.shakeT > 0 ? Math.round(rnd(G.shakeM, -G.shakeM) * S) : 0;
+
+  drawSky();
+  for (const c of G.clouds) SPT("cloud", c.x, c.y, 0, 0, CLOUD);
+  drawGround();
+  drawObstacles();
+  drawItems();
+  drawEffects();
+  drawBoss();
+  drawBeam();
+  drawParryHint();
+  drawTrajectory();
+  drawDino();
+  drawHook();
+
+  OX = 0; OY = 0;
+  drawHud();
+  if (G.state === "ready") drawReady();
+  else if (G.state === "over") drawOver();
+  else if (G.state === "win") drawWin();
+  else if (G.state === "shop") drawShop();
+  else if (G.state === "pro") drawPro();
+  else if (G.state === "pause") drawPause();
+
+  const rkt = document.getElementById("bRocket");
+  if (rkt) rkt.classList.toggle("dim", G.state === "run" && (G.ammo === 0 || G.cool > 0));
+  const hk = document.getElementById("bHook");
+  if (hk) hk.classList.toggle("dim", G.state === "run" && P.hookT > 0);
+  const rd = document.getElementById("bRide");
+  if (rd) rd.classList.toggle("dim", G.state === "run" && !flying() && save.boards <= 0 && !save.pro);
+  const slw = document.getElementById("bSlow");
+  if (slw) {
+    const cooling = G.slowCd > 0;
+    slw.classList.toggle("dim", cooling);
+    const label = cooling ? (G.slowCd / 1000).toFixed(1) + "s" : "SLOW";
+    if (slw.textContent !== label) slw.textContent = label;
+  }
+}
+
+/* ---------------------------------- loop ---------------------------------- */
+let acc = 0, last = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!last) last = now;
+  let dt = now - last; last = now;
+  if (dt > 250) dt = 250;
+  acc += dt;
+  let n = 0;
+  while (acc >= STEP && n < 8) { update(); acc -= STEP; n++; }
+  if (n >= 8) acc = 0;
+  Snd.pump();
+  render();
+}
+
+/* ------------------------------ install as an app --------------------------
+   The game is a normal web page first and an app second: it ships a manifest
+   and a service worker, so a browser offers "Add to Home Screen" and the same
+   URL can be wrapped into a real Android APK with a Trusted Web Activity.  The
+   INSTALL chip is only ever shown when the browser has offered a prompt. */
+const installChip = document.getElementById("bInstall");
+let installEvt = null;
+function refreshInstallChip() { if (installChip) installChip.hidden = !installEvt; }
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault(); installEvt = e; refreshInstallChip();
+});
+window.addEventListener("appinstalled", () => { installEvt = null; refreshInstallChip(); });
+/* pointerdown, not click: a touch tap has to reach this before any gesture
+   handling can get between the finger and the browser's install prompt */
+if (installChip) installChip.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  if (!installEvt) return;
+  try { installEvt.prompt(); } catch (err) {}
+  installEvt = null; refreshInstallChip();
+});
+/* the worker is what makes the game work with no network at all — which is
+   the entire joke of the game, and also what a TWA needs to be installable */
+if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+}
+
+/* ---------------------------------- boot ---------------------------------- */
+resize();
+refreshSoundChip();
+refreshProChip();
+refreshInstallChip();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
