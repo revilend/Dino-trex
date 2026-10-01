@@ -9,16 +9,24 @@ Open `index.html` in a browser and you're playing. That's it.
 
 This isn't an endless runner: it's a **100,000-metre journey** to the 7G Wi-Fi
 Tower, with **five boss gates** on the road and a **checkpoint every 10,000m**
-so a crash is never a total loss.
+so a crash is never a total loss. Finish it and you can keep going in
+**Legendary Overdrive**; set a tag and you can see where you rank on the
+**global leaderboard**. Inside the Android app it also **signs you in silently
+with Google Play Games** on launch, files your distance, skins and Wi-Fi coins to
+the **Play Games cloud save**, unlocks **seven achievements**, and sells **DINO
+PRO** as a one-time **Play Billing** purchase. In a browser every one of those
+steps quietly does nothing, and the game is completely unlocked.
 
 ## Run it
 
 ```bash
 npm run dev        # or: node server.mjs   (serves on $PORT, defaults to 5173)
-npm test           # headless harness: 768 checks across physics, input, audio,
+npm test           # headless harness: 1028 checks across physics, input, audio,
                    # the shop, bullet time, the five bosses, the checkpoints,
                    # the power-ups, the 100,000m finish, the menus, mobile,
-                   # the landscape fullscreen layout, the app name in every
+                   # the landscape fullscreen layout, the Play Games silent
+                   # sign-in and cloud save (against a stand-in host AND a cold
+                   # boot), the app name in every
                    # place Play and Android read it, and the PWA manifest /
                    # service worker / icons that make the game installable and
                    # AAB-ready
@@ -74,6 +82,51 @@ only**. In landscape a phone gets the whole 16:9 box, edge to edge, with no
 black bars down the sides. That band used to be reserved in both orientations,
 which silently shrank the landscape box to ~57% of the width; the harness now
 asserts the landscape box fills the viewport.
+
+### It turns itself
+
+No button, no prompt, no "rotate your device" overlay. Two rules, and nothing
+else:
+
+1. **A coarse pointer held in portrait gets the box rotated 90°.** The wrapper
+   is sized to the screen's dimensions *turned on their side* and then rotated
+   into place, so a 402×891 portrait viewport presents the game as 891×402. That
+   swap is the entire trick — it is asking the browser for landscape without the
+   device ever physically turning.
+2. **The first touch anywhere asks for fullscreen and locks the orientation**,
+   from inside that gesture, because both calls are user-activation-gated and a
+   request made a frame later is silently refused. A browser with no
+   `orientation.lock`, or no `requestFullscreen` at all, still plays fine.
+
+A mouse in a tall desktop window is deliberately **left alone** — rotating that
+would be a bug, not a feature. When the phone physically turns, `rot` flips back
+on its own.
+
+The part that is easy to get wrong, and that the harness spends 20 checks on:
+
+> **A 90° CSS transform does not change what `getBoundingClientRect` reports.**
+> It returns the *axis-aligned box of the rotated result* — for a landscape box
+> turned inside a portrait screen, a completely different rectangle from the one
+> the player is looking at. Subtracting `rect.left`/`rect.top` from a touch puts
+> every tap a whole screen out of position.
+
+So `toWorld()` undoes the rotation by hand, working in the rotated frame's centre
+(which a rotation about the centre preserves) and mapping through the inverse:
+
+```js
+const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+const dx = e.clientX - cx, dy = e.clientY - cy;
+// inverse of rotate(90deg): (dx,dy) -> (dy,-dx)
+const ux = dy, uy = -dx;
+const bw = r.height, bh = r.width;      // the box, pre-transform
+return { x: (ux + bw / 2) / k, y: (uy + bh / 2) / k };
+```
+
+The swipe handler un-turns its **delta** the same way, because "down" for the
+player's thumb is screen-*left* once the box is turned. The harness checks both
+directions of that — dragging the other way must *not* register, which is what
+proves the un-rotation is actually happening rather than the test passing by
+accident.
 
 The only thing that is *not* here is the Android toolchain itself: this
 workspace is a Node.js image with no JDK, Gradle or Android SDK, so the build
@@ -248,15 +301,25 @@ into anything else:
  ━━━━━━━━━━━━━      ━━━━━━━━━━━━━━━━━━━━━      ━━━━━━━━━━━━━━━━━━━━━━━━━━━
   1234  x4          40%  ━━━━┳━━━  📶 100,000m     HI 04820
   x2    3.0              CP 40,000m                      01268
-  CERTIFIED LEGEND
+                                                     SLOW 5.8s
+  CERTIFIED LEGEND                                  LASER 4.2s
+                                                     COMBO x3
+                                                    ▰▰▰▰▰▰▱▱▱▱
 ```
 
 - **Top left:** the Wi-Fi coin wallet (with its `x2` PRO tag), the rocket
   counter, the hoverboard stock and the incognito timer, on two rows.
 - **Top centre:** the progress bar and its `%`, the `100,000m` label, and the
   checkpoint / best-metres line underneath.
-- **Top right:** the high score over the running score, placed **below** the
-  DOM chips (`👑 GO PRO` / `PAUSE` / `SOUND`) rather than under them. While a
+- **Top right:** the high score over the running score, then the two
+  limited-weapon recharges (`SLOW 5.8s`, `LASER 4.2s`) on a line each, and —
+  **only while a grapple is in the air** — `COMBO x3`: the kill-chain the rope
+  is keeping alive, with a bar under it for the remaining combo window, which
+  **drains as you swing** and is refilled the moment you detach. It rides a band
+  of its own so it can never touch the recharge lines above it, which the suite
+  proves by reconstructing the boxes and asserting they do not overlap — and by
+  checking the bar is as full as the window it is holding. The whole cluster sits **below** the DOM
+  chips (`👑 GO PRO` / `PAUSE` / `SOUND`) rather than under them. While a
   full-screen panel is open the chips leave entirely, because a panel is 213 of
   the 216 world units tall — the chips are not *near* it, they are inside it,
   and they were printing `👑 GO PRO / PAUSE / SOUND` straight across the DINO
@@ -326,7 +389,10 @@ closes in. The boss bar counts down: `IMPACT IN 5s`.
 ## The Grand Finale
 
 Reach **100,000m** and the run stops dead — no scrolling, no spawning, and every
-control refuses, because the next ten seconds belong to the cutscene.
+control refuses, because the next ten seconds belong to the cutscene. When the
+dialog arrives it does not only offer you a restart: it asks whether you want to
+**keep going**, and [Legendary Overdrive](#legendary-overdrive--the-question-on-the-dialog)
+is the answer.
 
 ### Six beats
 
@@ -360,14 +426,16 @@ At the end of it, a Chrome dialog:
 │   CERTIFIED LEGEND                          │
 │   Extinction Cancelled. Dinosaurs Ruled...  │
 │                                             │
-│   TOTAL DISTANCE        100,000 M           │
-│   TIME ELAPSED          8m 32s              │  measured by a real run clock
-│   BOSSES DEFEATED       5 / 5  ROUTER · QUEEN│
-│   BONUS REWARD          +1,000 WI-FI COINS  │
+│   TOTAL DISTANCE  100,000 M  TIME ELAPSED  8m 32s  │
+│   BOSSES DEFEATED  5/5 ROUTER·QUEEN  BONUS  +1,000    │
 │                                             │
-│   ┃ 👑 EMPEROR T-REX SKIN UNLOCKED ...     ┃ │  gold banner
+│   ┃ 👑 EMPEROR T-REX SKIN UNLOCKED AND EQ. ┃ │  gold band
+│   ┃ Do you want to continue running in     ┃ │
+│   ┃   Endless Legendary Mode?              ┃ │
+│   ┃ 🔥 MAX SPEED · 3x COINS · RANDOM GATES ┃ │
 │   [ ▶ PLAY AGAIN ]    [ 🛒 OPEN WARDROBE ]  │
-│                                             │
+│   [ 🔥 CONTINUE RUNNING (ENDLESS)         ] │  the widest key on the dialog
+│              [ 🏠 MAIN MENU ]              │
 │   No cacti ... except the router.           │  post-credits
 └─────────────────────────────────────────────┘
 ```
@@ -375,6 +443,184 @@ At the end of it, a Chrome dialog:
 The **elapsed time** is a real measurement: `update()` counts milliseconds while
 `G.state === "run"`, and `win()` freezes that number into the cutscene. A
 distance with no clock on it reads as an abstraction.
+
+The four stats run as **two label/value pairs a row** rather than four stacked
+rows, which is the only reason the question below has room to be asked at all:
+the dialog is 213 units tall in a 216-unit world, so it cannot grow a unit, and
+everything that competes for its lower half has to share it.
+
+### Legendary Overdrive — the question on the dialog
+
+The finale used to end on a choice between *play again* and *open the wardrobe*.
+But a player who has just earned a crown and a cape does not want either of
+those two — they want to **keep running, wearing it**. So the dialog asks:
+
+> **Do you want to continue running in Endless Legendary Mode?**
+
+**🔥 CONTINUE RUNNING (ENDLESS)** is the widest key on the dialog, and it sits
+below the two that were already there, because it is the one the dialog now
+exists to ask about. Press it and the dialog closes, the road keeps moving, and
+the counter starts climbing again: 100,001m, 100,002m, all the way to whatever
+you can survive.
+
+What changes, all of it in one function (`enterOverdrive()`):
+
+| | Normal run | Legendary Overdrive |
+| --- | --- | --- |
+| Top speed | `9.6` | **`12.4`** (`CFG.OVER_SPEED`) |
+| Wi-Fi coins | ×1 (×2 with PRO) | **×3** (×6 with PRO) |
+| Bosses | five, at fixed distances | **random**, forever |
+| Distance | stops at 100,000m | **unbounded** |
+| Outfit | Emperor T-Rex, if you bought it | Emperor T-Rex, **plus the crown, shades and cape** |
+
+Three details that are easy to get wrong and are each pinned by the harness:
+
+- **The top speed eases in over 1.4 seconds.** A speed that jumps 30% inside a
+  single frame reads as a bug, not as a reward — the ramp is a smoothstep from
+  `MAX_SPEED` to `OVER_SPEED`, sampled off `G.overT`, the mode's own clock.
+- **The three coins stack with PRO rather than replacing it.** A PRO player who
+  keeps running is paid **six** a coin, not quietly demoted back to three by the
+  mode that is supposed to be the reward. `coinMul()` is the one place that
+  decides, and the HUD wallet prints the live rate.
+- **The five fixed gates are disarmed for good.** `G.bossIdx` is pushed past the
+  end of `BOSSES`, so the overdrive grows its own gate on a random 9–21 second
+  timer — and the next one is only armed once the last is down, so you never
+  meet two at once.
+
+**🏠 MAIN MENU** is the way out: back to the title card, with the overdrive, the
+parked tower, the cutscene and the checkpoint all put away. Nothing is banked
+behind it, because an endless run has nothing to resume to.
+
+The counter itself had to change too. The journey's metre readout was clamped to
+`CFG.FINISH`, so the HUD would have sat at `100,000m / 100%` forever while the
+run climbed past it — and a progress bar pinned at 100% next to a number still
+rising is the one combination that reads as a bug. In the overdrive the bar
+relabels itself **ENDLESS** and follows the live distance.
+
+One genuine bug fell out of this: `save.bestM` — the furthest run you have ever
+made — was only ever written by `win()`. A run that died at 96,000m recorded
+nothing at all, and neither does an endless one. It is now written on **every**
+crash, which is what makes "how far did you get" mean anything before you finish
+the journey.
+
+## The Global Leaderboard
+
+A real server, not a list of invented rivals. The board is a **sorted set in an
+Upstash Redis database**, read and written straight from the browser with
+`fetch` — no SDK, no npm, no backend of our own, so *one file, zero
+dependencies, no build step* survives the feature. Redis does the sorting, which
+is what makes the table genuinely global and genuinely ordered by the server
+rather than by whoever rendered it.
+
+> **To switch it on, paste two values** into the `LB` block near the top of the
+> script — Upstash console → your database → Connection → **REST URL** and
+> **Token**. Until they are there the board says `OFFLINE · NO LEADERBOARD
+> ENDPOINT IS CONFIGURED`, which is the point: a leaderboard that cannot be
+> reached must *say so* rather than show an empty table, because an empty table
+> reads as "nobody has ever played this game", and that is the one lie this
+> panel is not allowed to tell.
+
+```
+┌───────────────────────────────────────────────┐
+│ 🏆  GLOBAL LEADERBOARD                        │
+│ ● LIVE  ·  5,127 RUNS FILED                   │  the server answered
+│ RANK      PLAYER               METRES         │
+│ 🥇        ZEPHYR               240,500m       │
+│ 🥈        NOVA                 198,300m       │
+│ 🥉        REX                  150,000m       │
+│ 4         BYTE                   99,000m       │
+│ …                                              │
+│ ┃NOVA            ← YOU          198,300m     ┃│  YOUR row, always pinned
+│ [ 🔄 REFRESH ]             [   CLOSE   ]      │
+│ ┃YOUR GLOBAL RANK     #2  ·  198,300m        ┃│  the server's own answer
+└───────────────────────────────────────────────┘
+```
+
+### Your tag
+
+Asked for once, on first launch, and again from the **👤 TAG** button on the
+title card or a crash card. Up to twelve printable characters, trimmed, saved in
+`localStorage`, and printed beside your record with the **skin you were wearing
+when you set it** — on both the title card and the game-over card.
+
+Typing is the one thing a canvas genuinely cannot do well, so the field is a
+**real `<input>`** placed over the canvas's own drawn field: transparent ink, no
+platform caret (the game draws its own, blinking), and sized from the same world
+coordinates **in percentages of the 16:9 shell** — so the two cannot drift out of
+register at any screen size, with no resize handler. That is also the only way a
+phone gives you a keyboard at all.
+
+**And the field is not part of the game's gesture surface.** The wrap listens for
+touches to turn a tap into a jump, and it `preventDefault()`s them so the
+browser's own gestures stay out of the way — which, applied to the field, meant
+every touch on the tag was swallowed *before* the browser could focus it or raise
+the soft keyboard, leaving a phone player with a field that simply did not type.
+`#namebox` is now in the same "hands off" set as the pad and the top bar, so the
+platform owns the field and the game owns the road: a touch on the field is never
+prevented, a touch on the road still is, and a tap on the panel *around* the
+field asks for the keyboard again. The harness checks all three — the last one
+because the panel's own comment had promised that tap for a while and nothing was
+doing it.
+
+It is skippable, because a player who does not want a tag must never be trapped
+in a panel. **SKIP** is the one key that means *no tag*. **Enter**, **SAVE &
+PLAY** and **`Escape`** all **commit whatever is in the field** — and that last
+one is a fix, not a detail:
+
+> `Escape` is what the Android soft keyboard's **BACK** key sends. It used to
+> discard the typed text and leave `save.name` at its previous value, so a phone
+> player who typed a tag, dismissed the keyboard with BACK and expected to keep
+> it lost it silently — and then crashed, got asked for the tag *again* on the
+> crash card, and was still running under the old one. **`Escape` now commits,
+> exactly like `Enter`**, and the panel says so: *"TYPE, THEN ENTER — ESC KEEPS
+> IT TOO"*.
+
+The panel is also **asked once per session**, whichever way it was answered.
+`G.nameAsked` is set by every exit, so the first crash no longer pops a question
+a player has already answered once — which is how a panel turns into something
+you tap through.
+
+And the flow is tested as one sequence rather than in pieces, because every way
+out of this panel used to be a way to lose what was typed: type a tag containing
+an **`X`**, get out with `Enter`, and press **`X`** for the pistol in the very
+next breath. The harness proves the key reaches the game, that `X` is a *letter*
+while the panel is open and a *weapon* the moment it closes, and that the real
+`<input>` is handed back (`blur`, `display:none`, and `body.typing` removed) on
+all four exits — Enter, the button, Escape and SKIP.
+
+### What gets filed, and when
+
+A **new personal best**, and only a new personal best, is filed on the server —
+automatically, at the moment you crash. A worse run has nothing to say to a table
+of bests. **🔄 REFRESH** re-asks the server rather than redrawing the last
+answer.
+
+### Two details that are easy to get wrong
+
+**An entry is keyed on the TAG, not on name-and-skin.** The sorted set's member
+is the tag alone and the skin lives in a hash beside it. Key it on both and
+changing skins silently files a second row for the same person.
+
+**`ZADD` is an overwrite, not a maximum.** A plain `ZADD key score member`
+*replaces* the score, so a player who crashed at 12,000m after a 240,000m run
+would erase their own record and the board would become a table of latest
+crashes. The game sends **`ZADD key GT CH score member`** — raise the score only
+if the new one is greater, and only report genuinely new members. That is the
+whole difference between a leaderboard and a list of last crashes.
+
+A skin id that arrives over the network is **checked, not trusted**: an entry
+claiming a skin the game has never heard of falls back to the classic rather
+than throwing on a missing sprite and taking the frame down with it.
+
+### Being straight about what this is
+
+The Upstash token has to be readable by every client, so **anybody can edit the
+page and submit a fake distance**. That is the same trade every browser-only
+leaderboard makes — Dreamlo, which was measured against this, has exactly the
+same hole and a decade of complaints about it. It is fine for an arcade
+high-score table. It is **not a prize table**, and the only honest fix for that
+is a server that verifies the run — which would mean this file no longer being
+the whole game.
 
 You are paid **+1,000 bonus coins**, and the **GOLDEN CROWN DINO** — the exclusive
 crown-and-aura skin — is unlocked *and equipped*, then persisted, so it survives a
@@ -389,6 +635,277 @@ nowhere else for them to go.
 
 > The post-credits line reads *"No cacti or pterodactyls were harmed in the making
 > of this run… except the router."*
+
+## Google Play Games: silent sign-in and cloud saves
+
+Inside the Android APK the game signs the player in **by itself, at launch**, and
+files progress to the Google Play Games cloud slot. In a browser it does neither,
+and you cannot tell the difference.
+
+### One object, four methods
+
+The Android host injects a single object into the WebView and the game talks to
+nothing else. That is the entire contract:
+
+```js
+window.PlayGames.autoSignIn()           // -> { playerId, gamerTag, iconUrl }
+window.PlayGames.loadSnapshot(slot)     // -> the object you last saved
+window.PlayGames.saveSnapshot(slot, o)  // -> acknowledged
+```
+
+`window.Capacitor.Plugins.PlayGames` is accepted as well, because there are three
+sane ways to wrap a web game in an Android app and two of them name the bridge
+differently. **The full host contract, in Kotlin and in Java, is in
+[ANDROID.md](ANDROID.md#the-play-games-bridge).**
+
+The adapter treats the bridge as *optional* in the strict sense:
+
+- it is **detected, never assumed**, and it is never `await`ed by anything —
+  the title card is already up and playable while the sign-in is in flight, and
+  still playable if it never comes back;
+- **every bridge call is raced against a 2.5-second timer**, so a wedged Play
+  Services costs one timeout and cannot hold the title card hostage;
+- **every field that comes back is validated, not trusted.** A Player ID must be
+  4–24 digits, a GamerTag is trimmed to the same 12 printable characters the
+  leaderboard uses, and an icon URL must be `http(s)`. This is the only value in
+  the game that arrived from somewhere we do not control, and it goes straight
+  into a save file, a cloud slot and a hashed avatar;
+- **it never throws.** No bridge, a bridge that rejects, a bridge that hangs, a
+  bridge that answers `{}` — all of them resolve to *nobody*, and the game
+  carries on.
+
+### The fallback is not a lesser path
+
+With no bridge — a desktop browser, a hosted preview, a PWA, a plain TWA — the
+game uses the nickname you saved yourself, or `Dino_Player`. It is the **same
+line in the same place on the same card**, so a browser player never sees a gap
+where an account would have been:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ ▓▓ 🎮  REX_77                    PLAY CLOUD ON             │  the title card
+│            PIXEL DINO                                       │  (icon, GamerTag,
+│        P A R K O U R   R U N                                │   cloud flag)
+│ …                                                          │
+```
+
+Connected, the top of the card carries the official **GamerTag** and the card is
+flagged `PLAY CLOUD ON`. Not connected, the flag reads `OFFLINE MODE`. Nothing
+else about the menu changes, and the line the identity sits on is measured
+against the card's own box by the harness so a 12-character GamerTag cannot
+overrun the edge or land on the wordmark.
+
+### The welcome banner
+
+```
+        ████████████████████████████████████████████
+        █  🎮 Welcome back, REX_77!              █   │  slides down from the top
+        █  PLAYER ID 1234567890123456789  ·  CLOUD █   │  in Play's own green
+```
+
+It is **drawn, not native**, and that is a fact rather than a shortcut: a silent
+sign-in cannot post a system notification without a consent flow the game has no
+business triggering, and a web game inside a WebView has no way to ask for one.
+So the game paints it itself — `#0b7a3e`, 264×36 world units, sliding in over
+16 frames, resting, and sliding back out. It is a greeting, not a control: there
+is no button on it, nothing is blocked, and `START` is pressable the whole time
+it is on screen.
+
+It is also **exactly once per session** (`PGS.said`), and it is armed only by a
+sign-in that actually produced a player.
+
+### The Gamer Icon is derived, not downloaded
+
+A Gamer Icon is a network image, and this game has never loaded one: every pixel
+it has ever drawn is a `fillRect`, which is the whole reason the APK is one file
+with no assets and works with the radio off. So the icon is **derived** instead
+of fetched — the Player ID is hashed with FNV-1a and 32 mirrored rectangles of
+the result make a face:
+
+- the **same player on every device** they sign in from,
+- **nothing downloaded**, so it works offline forever,
+- **two players never share one**, which the harness proves by rendering the same
+  tile from two IDs and comparing the rasters.
+
+The official `iconUrl` is still read and validated, and is available to the host;
+it simply is not what is drawn.
+
+### Cloud save
+
+One slot, `pixeldino.save.v1`, and the payload is deliberately tiny — the three
+things you would miss, plus enough to identify whose save it is:
+
+```json
+{ "v": 1, "gtag": "REX_77", "pid": "1234567890123456789",
+  "bestM": 240500, "best": 9820, "coins": 1480,
+  "owned": ["classic", "cyber"], "skin": "cyber", "pro": true }
+```
+
+It is pushed **automatically** on the only beats where something genuinely
+changed — a **new personal best** on a crash, the **100,000m finish**, and
+**unlocking or equipping a skin**. A worse run uploads nothing, because there is
+nothing to upload.
+
+### A merge may only ever add
+
+The cloud slot is another machine's idea of your progress. It can be older, it
+can be half-written, and on a shared device it can be somebody else's. So the
+restore is deliberately one-directional:
+
+| Field | Merge rule | Why |
+| --- | --- | --- |
+| `bestM`, `best`, `coins` | **max** | a stale slot can never lower a distance or empty a wallet |
+| `owned` | **union** | a skin earned on this device is never dropped |
+| `skin` | adopted **only while the local skin is still `classic`** | a stale slot cannot un-gild a dino you already earned the crown on |
+| `pro` | **or** | you cannot lose the pass you paid for |
+| `pid`, `gtag`, `v` | **ignored** | identity is read from the sign-in, never from the payload |
+
+A corrupt or hostile slot is tested directly — negative metres, `"lots"` for
+coins, a skin id the game has never heard of, a `pid` of `<script>` — and the
+harness asserts that **not one thing is taken away and not one runtime error is
+raised**. If this device is the one that is ahead, it wins the argument and
+pushes straight back, so the two copies cannot sit disagreeing.
+
+### What the harness actually proves
+
+The bridge cannot be exercised for real in a workspace with no JDK, Gradle or
+Android SDK, so the suite runs it two ways:
+
+1. **A stand-in host** (`PG_HOST`) that records every call and holds the slot —
+   the game calls it, parses its answers and decides for itself what to believe.
+2. **A cold boot** (`bootWith`): a second, fresh VM running the real script with
+   the host installed *before the first line of it executes*, and not one
+   simulated tap. This is the only honest way to test *"on launch"*, and it
+   asserts that the player is signed in, the cloud save is merged, the title card
+   is up and the banner is sliding — all before anyone touches the screen.
+
+Then the same cold boot is repeated **with no host at all**, and asserted to be
+the same game minus the banner. Thirty-one checks, ending with a player who has
+never installed the APK.
+
+## Making money from it: Play Billing and Achievements
+
+Google Play's payments policy is unambiguous — a digital item sold on Android
+goes through **Play Billing**, and Stripe or Paddle are both rejected. So **DINO
+PRO** became a **one-time non-consumable**: nothing expires, nothing renews,
+nothing has to be cancelled. That is both the honest product and the simplest
+thing that satisfies the policy.
+
+> ### ⚠️ TWA cannot sell anything
+>
+> A **Trusted Web Activity** is a web page in a browser. It has no Play Billing,
+> no Play Games, no Google account. The `Bubblewrap` route in [ANDROID.md]
+> produces an APK that **cannot take money at all**.
+>
+> **Use Capacitor, or your own WebView app.** The `index.html` is identical
+> either way — Capacitor only adds a native bridge.
+
+### One more object, same shape
+
+The repository already had `LB` (leaderboard) and `PGS` (Play Games); billing
+is the third of the same kind:
+
+```js
+window.PlayBilling.queryPurchases(sku)      // -> { owned, price }
+window.PlayBilling.launchBillingFlow(sku, page)  // -> { state, price }
+```
+
+`BILL.sku` is `dino_pro_lifetime` — **the product id as it appears in Play
+Console**, and the only thing you have to change when you create it.
+
+### The price is the store's, never ours
+
+```js
+if (/^[$\u20ac\u00a3]\s?[\d.,]+$/.test(r.price)) BILLS.price = r.price;
+```
+
+A hard-coded `$2.99` is a charge the player did not agree to the moment you run
+a sale or open a new region. The host's price is used when it looks like a
+price and **discarded when it does not** — the harness fires
+`<script>alert(1)</script>` at it and asserts it is refused.
+
+### Play's rule, and how it is enforced
+
+> An app that cannot charge must not show a price.
+
+So the rule is **conditional**, and both halves are asserted:
+
+| Build | Header | The key | RESTORE | The line under the perks |
+| --- | --- | --- | --- | --- |
+| Browser | `FREE` | `ACTIVATE PRO` | absent | `FREE FOREVER — NOTHING TO PAY` |
+| APK, store live | `VIP PASS` | `UNLOCK $2.99` | present | `ONE-TIME PURCHASE — … FOREVER` |
+| APK, store broken | `VIP PASS` | `UNLOCK $2.99` | present | `PAYMENTS UNAVAILABLE — PLEASE TRY AGAIN` |
+
+That third row is a bug the harness found. `activatePro()` used to fall back to
+granting the pass for free whenever `BILLS.on` was false — which conflated *no
+store exists* with *the store is broken*, and handed the paid thing to every
+player with a flaky BillingClient. There are now two facts:
+
+```js
+BILLS.store   /* a BillingClient EXISTS  — never grant for free */
+BILLS.on      /* it ANSWERED             — only now may a price be quoted */
+```
+
+**A free tier on an app that sells a purchase is exactly what the policy exists
+to prevent.** So a broken store grants nothing, quotes nothing and says *try
+again*.
+
+### Restoring is automatic, because it has to be
+
+A pass is restored **silently and unasked** the moment the store says the
+account owns it — reinstalling, switching phones or a cleared browser must not
+take something a player paid for away, and *asking* them to buy it again is the
+single most reliable way to fail a Play review. The `RESTORE` key exists too, for
+the account that asks.
+
+Purchases are also **once**: pressing the key on a pass you already own never
+reaches the store, because a non-consumable has nothing to re-buy.
+
+### Achievements — free, and the cheaper half
+
+Seven of them, each on something a player already does, and each worth more than
+the price of the pass:
+
+| id | | |
+| --- | --- | --- |
+| `CGI_CRASH` | FIRST 404 | Crash into the offline dinosaur. |
+| `WIFI_1K` | FIRST SIGNAL | Reach the first 1,000m. |
+| `BOSS_1` | GATE ONE | Beat your first boss gate. |
+| `BOSS_ALL` | ALL GATES | Beat all five. |
+| `GLORY_100K` | CERTIFIED | Finish the 100,000m journey. |
+| `OVERDRIVE` | OVERDRIVE | Reach 250,000m in Legendary Overdrive. |
+| `STYLIST` | WARDROBE | Own every skin. |
+
+They are **evaluated, never sprinkled**: every moment the game has new numbers
+calls `achCheck()`, which fires whatever is now true and has not fired yet. One
+place to read, one place to test, and a new line of code that beats a boss
+cannot forget to check. Fire-and-forget, once per session, and an achievement is
+never worth an error or a retry.
+
+They ride on the **same `PlayGames` object** as the silent sign-in, and a host
+without `achievement()` disables the whole feature rather than half of it — the
+harness asserts both.
+
+### What the harness proves about money
+
+A second set of hosts: `BILL_HOST` (a store that can be told to own, to cancel,
+to fail, to hang, or to quote a different currency) and `BILL_HOST` installed
+into the cold boot alongside the Play Games host. Twenty-four checks covering
+the whole lifecycle:
+
+- **no store** → free, and not one label quotes a price;
+- **store live** → the pass must quote one, or it is not a product;
+- **buying** → the flow launches for exactly `dino_pro_lifetime`, and the grant
+  is identical to the free path because both run `givePro()`;
+- **buying twice** → the second press never reaches the store;
+- **cancelling** → grants nothing, says so, and the game stays playable;
+- **store down** → grants nothing, quotes nothing, throws nothing;
+- **store hanging** → timed out, and the game never locks;
+- **reinstalling** → the pass comes back on its own, with the crown;
+- **cold boot** → a paying account is restored, a non-paying one is not.
+
+And a final cold boot **with no store at all**, asserted to be the same game —
+because a checkout that cannot take money is worse than no checkout.
 
 ## Power-ups: the Hoverboard and Incognito Mode
 
@@ -468,6 +985,35 @@ the swing carries you safely over every ground cactus, then it releases with a
 **`NICE!`** pop-up and +60. With nothing overhead the hook refuses instead of
 wasting the input (`NO ANCHOR`). You cannot grapple while riding the board —
 stow it first.
+
+That immunity is **height-independent, not just a side effect of being high
+up**: the harness drops a cactus straight through the dino at the bottom of the
+swing, where he is only a few units off the road, and proves he survives it —
+then proves the *same* cactus is fatal the moment he is not hooking. Without the
+second half the first would pass on altitude alone.
+
+**The rope does not cost you your chain.** A grapple used to wipe the combo,
+which made the hook a trap rather than an escape: swing over a cactus and the
+kills you had banked died with it. Now the swing **spares the chain even as its
+window runs out**, and the detach **tops the window back up** — so you come out
+of the arc still holding exactly the combo you went in with, however long the
+swing was. It is *spent*, not *extended*: with no swing behind it, the same
+window still expires on its own, which is exactly what the harness checks
+against.
+
+The chain is **readable while it is being held**: for as long as the hook is in
+the air and there is a combo worth keeping, a gold **`COMBO x3`** appears in the
+HUD's right column, on a band of its own under the weapon recharges, with a
+**bar underneath it for the remaining window**. It shows up when the swing
+starts and vanishes the moment the rope does.
+
+The bar is **honest, not decorative**: the window really does drain while you
+fly, so the bar shrinks for real and can empty mid-swing — but empty is not
+lost, because the detach refills it. A swing that outlasted the whole window
+still hands you back a full bar on the road. It turns red under 30%. The harness
+proves the bar is reading the real window rather than being decoration by
+filling it from a full window and from half a window and asserting the two
+widths differ by the ratio they should.
 
 **The sky is always stocked.** Pixel clouds drift across it on every screen,
 including the title card, at a steady rate and in a band (`y 40..90`) chosen so
@@ -725,7 +1271,7 @@ possible evidence for the claim.
 | --- | --- |
 | `index.html` | The entire game. Self-contained and portable. |
 | `server.mjs` | Zero-dependency static server for preview / hosting. |
-| `smoke-test.cjs` | Headless harness that drives the real script in a VM (768 checks). |
+| `smoke-test.cjs` | Headless harness that drives the real script in a VM (1028 checks). |
 | `skin-card.cjs` | Dev-only: renders the skins as ANSI pixel art + `skins.svg`, and reports each accessory's alignment against the Chrome eye notch. |
 | `manifest.webmanifest` | PWA metadata: **fullscreen + landscape** display, the icon set, theme colours, the app name. |
 | `sw.js` | Offline service worker. Network-first for the page (never a stale build), cache-first for the icons. |

@@ -38,7 +38,31 @@
     display: flex; align-items: center; justify-content: center;
     padding-bottom: var(--padroom, 0px);
   }
+  /* AUTO LANDSCAPE.  A phone held upright is asked — never told, never a button
+     — to turn: the whole game box rotates 90 degrees about its own centre.  The
+     swap is the entire trick.  A 400x850 portrait viewport cannot hold a 16:9
+     box, but a 850x400 one holds it perfectly; so the wrapper is sized to the
+     SWAPPED viewport and then rotated, which is the same as asking the browser
+     for landscape without the device ever physically turning. */
+  #wrap.rot {
+    position: fixed;
+    top: 50%; left: 50%;
+    width: var(--rw, 100vh); height: var(--rh, 100vw);
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center center;
+    padding-bottom: 0;              /* the pad lives inside the game box already */
+  }
+  /* The transition is deliberately short: a half-second spin on launch reads as
+     a loading animation nobody asked for, and a long one leaves the player
+     tapping a picture that is still turning. */
+  #wrap { transition: transform .22s ease; }
+  body.rot { overflow: hidden; }
   #shell { position: relative; overflow: hidden; background: var(--paper); transition: background-color .3s ease; box-shadow: 0 0 0 1px var(--hair); }
+  /* 16:9 is stated, not just computed: resize() sets the width and this rule
+     derives the height, so the box can never end up a fraction off-ratio from a
+     rounding step.  The ratio is also written into CFG, so the layout and the
+     resizer are reading the same number. */
+  #shell { aspect-ratio: 16 / 9; height: auto; }
   canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; touch-action: none; }
 
   /* the chips ride on the game itself, not on the page */
@@ -79,6 +103,23 @@
      leave instead, and come straight back when the panel closes. */
   body.modal #topbar { opacity: 0; pointer-events: none; }
   #topbar { transition: opacity .16s ease; }
+  /* The tag field.  It is sized and placed in PERCENTAGES of the 16:9 shell
+     from the same world coordinates the canvas draws the field with, so the ink
+     you see is the game's and the caret is the platform's, and neither of them
+     can drift out of register with the other — at any screen size, with no
+     resize handler.  It covers the field alone, never the panel, so the
+     panel's own buttons stay tappable. */
+  #namebox {
+    position: absolute; z-index: 4; display: none;
+    margin: 0; padding: 0; border: 0; outline: 0; background: transparent;
+    color: transparent; caret-color: transparent;
+    font: 700 16px/1 "Courier New", Courier, monospace;
+    -webkit-user-select: text; user-select: text; text-align: center;
+  }
+  /* body.typing lifts the user-select ban the game needs everywhere else, so
+     the field is actually editable instead of silently eating every keystroke */
+  body.typing, body.typing * { -webkit-user-select: text; user-select: text; }
+  #namebox.on { display: block; }
   #pad, .btn { transition: opacity .16s ease, background-color .3s ease, color .3s ease, border-color .3s ease, transform .07s ease; }
   .btn {
     position: relative; flex: 1 1 0; min-width: 0; pointer-events: auto;
@@ -119,6 +160,14 @@
       <div class="chip" id="bPause" role="button" tabindex="-1">PAUSE</div>
       <div class="chip" id="bSound" role="button" tabindex="-1">SOUND</div>
     </div>
+
+    <!-- The player tag is typed, and a tag on a phone needs the phone's own
+         keyboard: a canvas-drawn text field with a hand-rolled key handler is
+         unusable with a thumb and cannot spell.  So the field is a real input,
+         transparent and sitting exactly over the canvas's own field, and the
+         game draws the frame, the caret and the button around it. -->
+    <input id="namebox" maxlength="12" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" aria-label="Player tag">
 
     <div id="pad">
       <div class="btn" id="bGrind" role="button" tabindex="-1" aria-label="Hold to slide or rail-grind a cactus">↓ GRIND</div>
@@ -369,10 +418,20 @@ function skinSprite(base) { return save.skin + "_" + base; }
 
 /* ------------------------------- storage ---------------------------------- */
 const SAVE_KEY = "dinoexe.save.v2";
+/* A tag is trimmed to printable ASCII and twelve characters.  It is the member
+   name of every entry on the global board, so it has to be a key that two
+   players cannot both claim by accident and one that can never be a newline. */
+const NAME_MAX = 12;
+const cleanName = v => String(v === undefined || v === null ? "" : v)
+  .replace(/[^\x20-\x7E]/g, " ").replace(/\s+/g, " ").trim().slice(0, NAME_MAX);
 const save = { best: 0, music: true, sound: true, coins: 0, owned: ["classic"], skin: "classic",
-              pro: false, title: "", bestM: 0, champ: 0, cp: null, boards: 0 };
+              pro: false, title: "", bestM: 0, champ: 0, cp: null, boards: 0, name: "",
+              pid: "", gtag: "" };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || "{}")); } catch (e) {}
 function sanitiseSave() {
+  /* a tag has to survive being a Redis member name and a table cell: no
+     control characters, no leading or trailing spaces, twelve characters */
+
   const ids = SKINS.map(s => s.id);
   save.owned = (Array.isArray(save.owned) ? save.owned : []).filter(id => ids.indexOf(id) >= 0);
   if (save.owned.indexOf("classic") === -1) save.owned.unshift("classic");
@@ -385,10 +444,479 @@ function sanitiseSave() {
   save.boards = Math.max(0, Math.min(99, save.boards | 0));
   save.pro = !!save.pro;
   save.title = typeof save.title === "string" ? save.title.slice(0, 24) : "";
+  /* the tag is what the whole global board is keyed by, so it is trimmed,
+     printable-ASCII only and hard-capped — two people cannot both be " Rex " */
+  save.name = cleanName(save.name);
+  /* The Google Play identity is two strings that arrived from the network, so
+     it is shape-checked here exactly like the tag.  A Player ID is digits; a
+     GamerTag is a tag.  Anything else is not an identity and is not stored. */
+  save.pid = /^[0-9]{4,24}$/.test(String(save.pid || "")) ? String(save.pid) : "";
+  save.gtag = cleanName(save.gtag);
   if (!save.cp || typeof save.cp.m !== "number") save.cp = null;   /* a checkpoint is a plain snapshot */
 }
 sanitiseSave();
 const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} };
+
+/* --------------------------- the global leaderboard ----------------------- */
+/* This is a real server, not a list of made-up rivals.  The board is a sorted
+   set in an Upstash Redis database, read and written straight from the browser
+   with fetch: no SDK, no npm, no backend of our own, so "one file, zero
+   dependencies, no build step" survives the feature.  Redis does the sorting,
+   which is why the board is genuinely global and genuinely ordered by the
+   server rather than by whoever rendered it.
+
+   >>> PASTE YOUR CREDENTIALS HERE <<<
+   Upstash console -> your database -> Connection -> REST URL and Token.
+
+   Honest about what this is: the token has to be readable by every client, so
+   anybody can edit the page and submit a fake distance.  That is the same trade
+   every browser-only leaderboard makes — Dreamlo, which this was measured
+   against, has exactly the same hole and a decade of complaints about it.  It
+   is fine for an arcade high-score table.  It is not a prize table, and the
+   only honest fix for that is a server that checks the run, which would mean
+   this file no longer being the whole game. */
+const LB = {
+  url: "", token: "",           /* <- your Upstash REST URL and Token        */
+  key: "pixeldino:lb:v1",        /* the sorted set every run is added to       */
+  skins: "pixeldino:skins:v1",   /* tag -> the skin they were wearing, as a hash */
+  top: 50,                       /* how many rows the board will draw          */
+};
+/* Everything the modal knows about the server, in one object, so the UI never
+   has to ask whether a fetch is in flight and can never paint a half-answer. */
+const LBS = {
+  rows: [], rank: 0, total: 0, busy: false, live: false,
+  status: "",                    /* "", "CONNECTING", "LIVE", "OFFLINE"       */
+  stamp: 0,                      /* when the board was last actually fetched  */
+  sent: 0,                       /* your best distance the server has accepted */
+  err: "",
+};
+const lbOn = () => !!(LB.url && LB.token) && typeof fetch === "function";
+/* One Redis command over plain HTTPS.  Upstash takes the whole command as a
+   JSON array in the body and answers {"result": ...} or {"error": "..."}. */
+async function lbCmd(cmd) {
+  if (!lbOn()) throw new Error("no endpoint");
+  const r = await fetch(LB.url, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + LB.token, "Content-Type": "application/json" },
+    body: JSON.stringify(cmd),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  if (j && j.error) throw new Error(String(j.error));
+  return j ? j.result : null;
+}
+/* The entry is two writes, not one, and the split is deliberate: the sorted set
+   is keyed by TAG alone, so re-running under a new tag raises the one entry
+   instead of littering the board with the same person's old rows — while the
+   skin lives in a hash beside it, where changing it costs nothing. */
+async function lbFetch() {
+  if (!lbOn()) { LBS.status = "OFFLINE"; LBS.live = false; LBS.err = "NO ENDPOINT"; return; }
+  LBS.status = "CONNECTING"; LBS.busy = true; LBS.err = "";
+  try {
+    const flat = await lbCmd(["ZREVRANGE", LB.key, "0", String(LB.top - 1), "WITHSCORES"]);
+    const skins = await lbCmd(["HGETALL", LB.skins]) || [];
+    const wear = {};
+    for (let i = 0; i + 1 < skins.length; i += 2) wear[skins[i]] = skins[i + 1];
+    const out = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) {
+      const m = Math.round(+flat[i + 1]);
+      if (!isFinite(m)) continue;
+      out.push({ n: cleanName(flat[i]) || "???", k: wear[cleanName(flat[i])] || "classic", m });
+    }
+    /* ZREVRANGE is already descending, but the board is drawn from this array
+       and a server that ever answers out of order must not be able to print a
+       leaderboard that is not one */
+    out.sort((a, b) => b.m - a.m || (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+    LBS.rows = out;
+    if (save.name) {
+      const at = out.findIndex(r => r.n === save.name);
+      /* inside the visible page the rank is the row; past it, only the server
+         knows, so ask it rather than guessing "somewhere below row 50" */
+      if (at >= 0) LBS.rank = at + 1;
+      else {
+        const r = await lbCmd(["ZREVRANK", LB.key, save.name]);
+        LBS.rank = r === null || r < 0 ? 0 : r + 1;
+      }
+      const mine = out.find(x => x.n === save.name);
+      LBS.sent = mine ? mine.m : LBS.sent;
+    } else { LBS.rank = 0; LBS.sent = 0; }
+    try { LBS.total = +await lbCmd(["ZCARD", LB.key]) || LBS.rows.length; } catch (e) {}
+    LBS.live = true; LBS.status = "LIVE"; LBS.stamp = Date.now();
+  } catch (e) {
+    /* A leaderboard that cannot be reached must say so.  Silently showing an
+       empty board would read as "nobody has played", which is a lie. */
+    LBS.live = false; LBS.status = "OFFLINE"; LBS.err = String(e.message || e).slice(0, 24).toUpperCase();
+    LBS.rows = []; LBS.rank = 0;
+  }
+  LBS.busy = false;
+}
+/* Submitting is a personal best and nothing else: a second run that is worse
+   must never move an entry, and a run with no tag has nothing to file under.
+
+   ZADD on its own is an OVERWRITE, not a maximum — a player who crashes at
+   12,000m after a 240,000m run would erase their own record, and the board
+   would be a table of latest crashes.  GT CH is the fix and it is one flag:
+   raise the score only if the new one is greater, and only report genuinely
+   new members. */
+async function lbSubmit() {
+  if (!save.name || !lbOn()) return false;
+  const m = Math.max(1, Math.floor(G.meters));
+  try {
+    await lbCmd(["ZADD", LB.key, "GT", "CH", String(m), save.name]);
+    await lbCmd(["HSET", LB.skins, save.name, save.skin]);
+    LBS.sent = Math.max(LBS.sent, m);
+    return true;
+  } catch (e) {
+    LBS.err = String(e.message || e).slice(0, 24).toUpperCase();
+    return false;
+  }
+}
+
+/* --------------------- Google Play Games Services (PGS) ------------------- */
+/* The Android host injects ONE object into the WebView, and this game talks to
+   nothing else.  The entire contract is four methods, all promises:
+
+       window.PlayGames.autoSignIn()          -> { playerId, gamerTag, iconUrl }
+       window.PlayGames.loadSnapshot(slot)    -> the object you last saved
+       window.PlayGames.saveSnapshot(slot, o) -> acknowledged
+       (getPlayerInfo() is honoured if the host has it, and never required)
+
+   Outside the APK — a desktop browser, a hosted preview, a PWA — there is no
+   such object, and the game must be EXACTLY the same game.  So the adapter
+   treats the bridge as optional: it is detected, it is never assumed, it
+   never throws, and nothing waits on it.  A player in a browser gets the
+   local nickname and, failing that, "Dino_Player" — and never a spinner, a
+   dialog, a permission prompt or a console error.
+
+   Every field that comes back is validated rather than trusted.  This is the
+   only value in the game that arrived from somewhere we do not control, and
+   a Player ID goes straight into a save file, a cloud slot and a hashed
+   identicon. */
+const PG = {
+  slot: "pixeldino.save.v1",   /* the cloud-save slot key, one slot, all progress */
+  v: 1,                        /* payload revision, so a future shape can be told */
+};
+const PGS = {
+  on: false,       /* a bridge answered AND it gave us a real player          */
+  id: "",          /* the official Google Player ID                           */
+  tag: "",         /* the official GamerTag                                    */
+  icon: "",        /* the official Gamer Icon URL, if the host offered one    */
+  busy: false,     /* a sign-in is in flight                                   */
+  said: false,     /* the welcome banner has already been shown this session  */
+  pushed: 0,       /* snapshots this session has filed                        */
+  pulled: 0,       /* cloud saves this session has merged                     */
+  err: "",         /* why there is no identity — never shown as a failure     */
+};
+/* The bridge, or null.  Three shapes are accepted because there are three sane
+   ways to wrap a web game in an Android app: a hand-written WebView with
+   addJavascriptInterface (window.PlayGames), a Capacitor plugin
+   (window.Capacitor.Plugins.PlayGames), and a TWA forwarding to its host. */
+function pgBridge() {
+  try {
+    if (typeof window === "undefined") return null;
+    if (window.PlayGames) return window.PlayGames;
+    const cap = window.Capacitor;
+    if (cap && cap.Plugins && cap.Plugins.PlayGames) return cap.Plugins.PlayGames;
+  } catch (e) { /* a hostile host must not be able to stop the title card */ }
+  return null;
+}
+/* A promise that may never settle is a promise that hangs the game.  Every
+   bridge call is raced against a timer, so a wedged host costs one timeout and
+   nothing else. */
+/* A promise that may never settle is a promise that hangs the game.  Every
+   bridge call is raced against a timer, so a wedged host costs one timeout and
+   nothing else.
+
+   A TIMEOUT resolves to null; a REJECTION rejects.  The two are different
+   facts and the difference is load-bearing: a store that never answers and a
+   store that refuses are different failures, and only the second one may say
+   "unavailable" rather than "cancelled".  Every caller has a catch, so a
+   refusal is reported, never thrown at the frame loop. */
+function pgWait(promise, ms) {
+  return new Promise((resolve, reject) => {
+    let done = false, timer = 0;
+    const ok = v => { if (done) return; done = true; if (timer) clearTimeout(timer); resolve(v); };
+    const no = e => { if (done) return; done = true; if (timer) clearTimeout(timer); reject(e); };
+    timer = setTimeout(() => ok(null), ms || CFG.PLAY_WAIT);
+    try { Promise.resolve(promise).then(ok, no); } catch (e) { no(e); }
+  });
+}
+/* Who the game thinks you are, in priority order: the live Google GamerTag, the
+   last one Google told us, the tag you typed yourself, and only then the
+   default.  It is a pure read — the title card calls it every frame. */
+const gamerTag = () => cleanName(PGS.tag || save.gtag || save.name) || "Dino_Player";
+/* Silent sign-in.  Fired once at boot and never awaited by anything: the title
+   card is already up and playable while this is still in flight, which is the
+   entire point of a SILENT sign-in. */
+async function pgAutoSignIn() {
+  const b = pgBridge();
+  if (!b || typeof b.autoSignIn !== "function") { PGS.on = false; return null; }
+  PGS.busy = true; PGS.err = "";
+  try {
+    const info = await pgWait(b.autoSignIn(), CFG.PLAY_WAIT);
+    /* The host may answer with the player, or with {isAuthenticated, player}.
+       Both are accepted, and each field is then validated on its own: a Player
+       ID is digits and a GamerTag is a tag. */
+    const p = (info && info.player) ? info.player : (info || {});
+    const rawId = String(p.playerId || p.playerID || p.id || "");
+    const rawIcon = p.iconUrl !== undefined ? p.iconUrl : p.icon;
+    PGS.id = /^[0-9]{4,24}$/.test(rawId) ? rawId : "";
+    PGS.tag = cleanName(p.gamerTag || p.displayName || p.tag || "");
+    PGS.icon = typeof rawIcon === "string" && /^https?:/.test(rawIcon) ? rawIcon : "";
+    PGS.on = !!(PGS.id || PGS.tag);
+    if (!PGS.on) PGS.err = "NO PLAYER";
+    if (PGS.on) {
+      /* Remembered, so the next launch — or a launch with no bridge at all —
+         still knows who this device belongs to. */
+      if (PGS.tag && PGS.tag !== save.gtag) { save.gtag = PGS.tag; persist(); }
+      if (PGS.id && PGS.id !== save.pid) { save.pid = PGS.id; persist(); }
+      if (!PGS.said) { PGS.said = true; G.pb = CFG.PLAY_BAN; G.pbT = CFG.PLAY_BAN; }
+    }
+  } catch (e) {
+    PGS.on = false;
+    PGS.err = String((e && e.message) || e).slice(0, 24).toUpperCase();
+  }
+  PGS.busy = false;
+  return PGS.on ? { id: PGS.id, tag: gamerTag(), icon: PGS.icon } : null;
+}
+/* The cloud payload: exactly the three things the player would miss, and the
+   two that make the row readable on a leaderboard.  Nothing else — the coins
+   and skins, the distance, and who it belongs to. */
+const pgSnapshot = () => ({
+  v: PG.v,
+  gtag: gamerTag(),
+  pid: PGS.id || save.pid || "",
+  bestM: Math.max(0, Math.floor(save.bestM)),
+  best: Math.max(0, Math.floor(save.best)),
+  coins: Math.max(0, save.coins | 0),
+  owned: save.owned.slice(),
+  skin: save.skin,
+  pro: !!save.pro,
+});
+/* Restoring a cloud save may only ever ADD.  The payload is another machine's
+   idea of your progress: it can be older, half-written, or somebody else's, so
+   every number is a MAX, every skin list is a UNION, and nothing is ever
+   removed.  A corrupt slot must not be able to take a 200,000m run away. */
+function pgMerge(c) {
+  if (!c || typeof c !== "object") return null;
+  const ids = SKINS.map(s => s.id);
+  const wasStarter = save.skin === "classic";
+  const num = v => { const n = Math.floor(Number(v)); return isFinite(n) && n > 0 ? n : 0; };
+  save.bestM = Math.max(save.bestM, num(c.bestM));
+  save.best = Math.max(save.best, num(c.best));
+  save.coins = Math.max(save.coins, num(c.coins));
+  const extra = Array.isArray(c.owned) ? c.owned.filter(id => typeof id === "string" && ids.indexOf(id) >= 0) : [];
+  for (const id of extra) if (save.owned.indexOf(id) < 0) save.owned.push(id);
+  /* The skin is the one field a MAX cannot express.  A stale slot must not
+     un-gild a dino, so the cloud skin is adopted only while the local one is
+     still the starter: once you have chosen, that choice is yours. */
+  if (typeof c.skin === "string" && ids.indexOf(c.skin) >= 0 &&
+      save.owned.indexOf(c.skin) >= 0 && wasStarter) save.skin = c.skin;
+  save.pro = save.pro || !!c.pro;
+  sanitiseSave();
+  persist();
+  PGS.pulled++;
+  return pgSnapshot();
+}
+async function pgPull() {
+  const b = pgBridge();
+  if (!PGS.on || !b || typeof b.loadSnapshot !== "function") return null;
+  try {
+    const cloud = await pgWait(b.loadSnapshot(PG.slot), CFG.PLAY_WAIT);
+    if (!cloud) return null;
+    const merged = pgMerge(cloud);
+    /* Whichever device is ahead writes, so the two copies cannot sit
+       disagreeing until the next crash.  A cloud slot that is a long way
+       behind is not uploaded over just for the sake of it. */
+    if (save.bestM > numOr(cloud.bestM) || save.coins > numOr(cloud.coins)) pgPush("ahead");
+    return merged;
+  } catch (e) {
+    PGS.err = String((e && e.message) || e).slice(0, 24).toUpperCase();
+    return null;
+  }
+}
+const numOr = v => { const n = Math.floor(Number(v)); return isFinite(n) && n > 0 ? n : 0; };
+async function pgPush(why) {
+  const b = pgBridge();
+  if (!PGS.on || !b || typeof b.saveSnapshot !== "function") return false;
+  try {
+    const ack = await pgWait(b.saveSnapshot(PG.slot, pgSnapshot()), CFG.PLAY_WAIT);
+    if (ack === null) { PGS.err = "NO ACK"; return false; }
+    PGS.pushed++; PGS.err = "";
+    return true;
+  } catch (e) {
+    PGS.err = String((e && e.message) || e).slice(0, 24).toUpperCase();
+    return false;
+  }
+}
+
+/* ------------------------ Google Play Billing (DINO PRO) ---------------- */
+/* Google Play's payments policy is unambiguous: a digital item sold on Android
+   has to go through Play Billing.  Stripe and Paddle are both rejected, and an
+   APK that takes money any other way is a takedown risk rather than a business.
+
+   So the pass is a ONE-TIME non-consumable, not a subscription: nothing expires,
+   nothing renews, nothing has to be cancelled.  That is both the honest product
+   and the simplest thing that satisfies the policy.
+
+   The same rule that governs the leaderboard and Play Games governs this one:
+   the bridge is optional.  In a browser there is no PlayBilling, the panel
+   says the pass is FREE, and the game is completely unlocked — because the
+   promise of this repository is still "open index.html and you are playing",
+   and a checkout that cannot take money is worse than no checkout.  A PRICE is
+   only ever printed when a live billing bridge is behind it, which is exactly
+   what Play's policy requires and exactly what the harness asserts. */
+const BILL = {
+  sku: "dino_pro_lifetime",   /* the product id as it appears in Play Console */
+  price: "$2.99",             /* the label; Play overrides it with the real one */
+};
+const BILLS = {
+  store: false,     /* a BillingClient EXISTS on this device            */
+  on: false,        /* ...and it ANSWERED, so a price can be quoted     */
+  owned: false,     /* this account owns DINO PRO                       */
+  busy: false,      /* a purchase is in flight                          */
+  price: BILL.price,
+  bought: 0,        /* purchases completed this session                 */
+  restored: 0,      /* times a pass came back without being asked for   */
+  err: "",
+};
+function billBridge() {
+  try {
+    if (typeof window === "undefined") return null;
+    if (window.PlayBilling) return window.PlayBilling;
+    const cap = window.Capacitor;
+    if (cap && cap.Plugins && cap.Plugins.PlayBilling) return cap.Plugins.PlayBilling;
+  } catch (e) { /* a hostile host must not be able to charge or block us */ }
+  return null;
+}
+/* Ownership is asked for, never assumed: a player who paid and reinstalled
+   gets the pass back, and a player who never paid must not get it by accident. */
+async function billQuery(quiet) {
+  const b = billBridge();
+  /* A store that EXISTS and a store that ANSWERS are different facts, and
+     collapsing them is how a broken BillingClient turns into a free pass. */
+  BILLS.store = !!b;
+  if (!b || typeof b.queryPurchases !== "function") { BILLS.on = false; BILLS.owned = save.pro; return false; }
+  try {
+    const r = await pgWait(b.queryPurchases(BILL.sku), CFG.PLAY_WAIT);
+    if (!r) { BILLS.err = "NO ANSWER"; return false; }
+    BILLS.on = true;
+    BILLS.owned = !!(r.owned || (Array.isArray(r.skus) && r.skus.indexOf(BILL.sku) >= 0));
+    /* the price is the STORE's, never ours: a hard-coded "$2.99" on a sale in
+       a new region is a charge the player did not agree to */
+    if (typeof r.price === "string" && /^[$\u20ac\u00a3]\s?[\d.,]+$/.test(r.price)) BILLS.price = r.price;
+    BILLS.err = "";
+    /* A pass this account already owns is restored SILENTLY and automatically.
+       Reinstalling, switching phones or a cleared browser must not take
+       something a player paid for away, and re-asking them for it would be
+       the single most likely way to fail a Play review. */
+    if (BILLS.owned && !save.pro) { BILLS.restored++; givePro("restored"); }
+    else if (save.pro) BILLS.owned = true;
+    return BILLS.owned;
+  } catch (e) {
+    BILLS.err = String((e && e.message) || e).slice(0, 20).toUpperCase();
+    return false;
+  }
+}
+/* The flow is launched by the bridge; the page this host is given back is the
+   only place a resume can arrive on, so the loop is bounded rather than
+   endless.  Everything it reports is treated as untrusted. */
+async function billPurchase() {
+  const b = billBridge();
+  BILLS.store = !!b;
+  if (!b || typeof b.launchBillingFlow !== "function") {
+    /* genuinely no store here — the web build grants the pass outright */
+    if (givePro("free")) { Snd.sfx.buy(); toast("PRO ACTIVATED - GOLDEN DINO UNLOCKED"); }
+    return true;
+  }
+  if (BILLS.busy) return false;
+  BILLS.busy = true; BILLS.err = "";
+  let timedOut = false;
+  try {
+    let page = null;
+    for (let i = 0; i < 3 && page !== "done"; i++) {
+      page = await pgWait(b.launchBillingFlow(BILL.sku, i), CFG.PLAY_WAIT);
+      /* the store never answered: that is an outage, not a player changing
+         their mind, and it must not be reported as a cancellation */
+      if (page === null) { timedOut = true; break; }
+      if (typeof page.price === "string" && /^[$\u20ac\u00a3]\s?[\d.,]+$/.test(page.price))
+        BILLS.price = page.price;
+    }
+    if (timedOut) {
+      BILLS.err = "TIMEOUT";
+      G.proMsg = "PAYMENTS UNAVAILABLE - PLEASE TRY AGAIN"; G.proMsgT = 140;
+    } else if (await billQuery(false)) {
+      BILLS.bought++;
+      givePro("bought");
+      Snd.sfx.buy();
+      shopMsgSave();
+      G.proMsg = "THANK YOU - PRO IS YOURS FOREVER"; G.proMsgT = 140;
+    } else {
+      BILLS.err = "CANCELLED";
+      shopMsgSave();
+      G.proMsg = "NOT PURCHASED - YOU CAN STILL PLAY EVERYTHING"; G.proMsgT = 140;
+    }
+  } catch (e) {
+    BILLS.err = String((e && e.message) || e).slice(0, 20).toUpperCase();
+    /* A store that is BROKEN is not a store that is absent.  Falling back to a
+       free pass here would hand every player with a flaky BillingClient the
+       paid thing for nothing, and a free tier on an app that sells a purchase
+       is exactly what Play's payments policy exists to prevent. */
+    G.proMsg = "PAYMENTS UNAVAILABLE - PLEASE TRY AGAIN"; G.proMsgT = 140;
+  }
+  BILLS.busy = false;
+  return BILLS.owned;
+}
+
+/* ---------------------- Google Play achievements ------------------------- */
+/* Free, and the cheapest retention lever there is: an achievement is a reason
+   to come back tomorrow, and Play puts them on the product page where the
+   store ranks the app.  Seven of them, each on something the player already
+   does, and each worth more than the price of the pass.
+
+   They are EVALUATED, never sprinkled: every moment the game has new numbers
+   calls achCheck(), and it fires whatever is now true and has not been fired
+   yet.  One place to read, one place to test — and a check can never be
+   forgotten by a new line of code that happens to beat a boss. */
+const ACHS = [
+  ["CGI_CRASH",  "FIRST 404",   "Crash into the offline dinosaur."],
+  ["WIFI_1K",    "FIRST SIGNAL", "Reach the first 1,000m."],
+  ["BOSS_1",     "GATE ONE",    "Beat your first boss gate."],
+  ["BOSS_ALL",   "ALL GATES",   "Beat all five boss gates."],
+  ["GLORY_100K", "CERTIFIED",   "Finish the 100,000m journey."],
+  ["OVERDRIVE",  "OVERDRIVE",   "Reach 250,000m in Legendary Overdrive."],
+  ["STYLIST",    "WARDROBE",    "Own every skin in the game."],
+];
+const ACH = { on: false, got: {}, sent: 0 };
+function achBridge() {
+  const b = pgBridge();
+  return b && b.achievement ? b.achievement.bind(b) : null;
+}
+/* Fire and forget.  An achievement is never worth an error, never worth a
+   retry, and never worth blocking a run on. */
+function unlock(id) {
+  if (!ACH.on || ACH.got[id]) return false;
+  const f = achBridge();
+  if (!f) return false;
+  ACH.got[id] = true;
+  try { f(id); } catch (e) { /* nothing to do, and nothing to show */ }
+  ACH.sent++;
+  return true;
+}
+function achCheck() {
+  if (!ACH.on) return 0;
+  let n = 0;
+  const fire = (id, ok) => { if (ok && unlock(id)) n++; };
+  fire("CGI_CRASH", save.best > 0 || save.champ > 0);
+  fire("WIFI_1K", save.bestM >= 1000);
+  fire("BOSS_1", G.bosses.some(Boolean));
+  fire("BOSS_ALL", G.bosses.filter(Boolean).length >= BOSSES.length);
+  fire("GLORY_100K", save.champ > 0);
+  fire("OVERDRIVE", save.bestM >= 250000);
+  fire("STYLIST", SKINS.every(s => save.owned.indexOf(s.id) >= 0));
+  return n;
+}
 
 /* --------------------------------- audio ---------------------------------- */
 const Snd = (() => {
@@ -543,24 +1071,35 @@ const ctx = cv.getContext("2d");
 let S = 2, CSS = 2, CW = 768, CH = 432, OX = 0, OY = 0;
 
 function resize() {
-  const vw = Math.max(200, wrap.clientWidth || window.innerWidth || 640);
-  const vh = Math.max(140, wrap.clientHeight || window.innerHeight || 360);
-  /* Leave room under the game for the touch pad — but ONLY in portrait.  In
-     landscape the pad already lives inside the game's own empty band below the
-     road line (it is 15.5% of the game height, and the road sits at 160 of 216
-     units, so there is a 26% band to sit in), so reserving an external band too
-     shrank the 16:9 box to ~57% of the width and left black bars down both
-     sides — the exact opposite of the fullscreen landscape an installed
-     landscape-locked app is supposed to launch into. */
+  /* The rotated wrapper is sized from the viewport, not measured off itself: a
+     90-degree-transformed element's clientWidth is still its pre-transform width,
+     which is the width the screen DOES NOT have.  Measuring it there is what
+     makes the naive version of this look broken. */
+  const raw = window.innerWidth || 640, rawH = window.innerHeight || 360;
+  const vw = rot ? Math.max(200, rawH) : Math.max(200, wrap.clientWidth || raw);
+  const vh = rot ? Math.max(140, raw)  : Math.max(140, wrap.clientHeight || rawH);
+  /* Leave room under the game for the touch pad — but ONLY in a portrait that
+     was NOT auto-rotated.  In landscape the pad already lives inside the game's
+     own empty band below the road line (it is 15.5% of the game height, and the
+     road sits at 160 of 216 units, so there is a 26% band to sit in), so
+     reserving an external band too shrank the 16:9 box to ~57% of the width and
+     left black bars down both sides. */
   const padRoom = touchUI && vh > vw ? Math.min(vh * 0.30, vw * 0.52) : 0;
   const boxH = Math.max(120, vh - padRoom);
-  const w = Math.min(vw, (boxH * 16) / 9), h = (w * 9) / 16;
+  const AR = CFG.RATIO_W / CFG.RATIO_H;
+  const w = Math.min(vw, boxH * AR), h = w / AR;
   shell.style.width = w + "px";
-  shell.style.height = h + "px";
+  /* the height is left to the aspect-ratio rule; assigning it as well is what
+     let a rounding step drift the box a pixel off 16:9 */
+  shell.style.height = h.toFixed(2) + "px";
   /* the band under the game is its own custom property, so it can add to the
      safe-area inset instead of replacing it (setting padding-bottom outright
      used to push the pad under the home indicator) */
   wrap.style.setProperty("--padroom", padRoom + "px");
+  /* the swap that makes a portrait phone playable: the wrapper is given the
+     screen's dimensions turned on their side, and CSS rotates it into place */
+  wrap.style.setProperty("--rw", rawH + "px");
+  wrap.style.setProperty("--rh", raw + "px");
   /* one knob for the whole overlay: every chip and button is a fraction of the
      on-screen game height, so the pad can never drift off the canvas */
   shell.style.setProperty("--u", h + "px");
@@ -573,9 +1112,76 @@ function resize() {
   ctx.imageSmoothingEnabled = false;
   P.x = Math.round(WW * 0.09);
 }
-if (typeof ResizeObserver !== "undefined") { try { new ResizeObserver(resize).observe(wrap); } catch (e) {} }
-window.addEventListener("resize", resize);
-window.addEventListener("orientationchange", resize);
+/* --------------------------- automatic landscape -------------------------- */
+/* Three rules, in order:
+   1. a coarse pointer (a real phone) in portrait gets the box rotated 90 degrees;
+   2. a mouse or a keyboard never does, because rotating a desktop window because
+      it happens to be taller than it is wide is a bug, not a feature;
+   3. once the device has physically turned, everything returns to normal.
+   Every one of them runs off resize/orientationchange, so there is no button,
+   no prompt and no state to get stuck in. */
+let rot = false;
+function orientationNow() {
+  const coarse = typeof matchMedia === "function" &&
+                 matchMedia("(pointer: coarse)").matches;
+  const w = window.innerWidth || 640, h = window.innerHeight || 360;
+  /* iPad in a split view is a desktop pointer on a phone-sized box: rotating
+     that would be right, so the width test alone decides once touch is on */
+  const touchy = touchUI || coarse;
+  return touchy && h > w;
+}
+function applyOrientation() {
+  const want = orientationNow();
+  if (want !== rot) {
+    rot = want;
+    if (document.body && document.body.classList)
+      document.body.classList.toggle("rot", rot);
+    if (wrap.classList) wrap.classList.toggle("rot", rot);
+  }
+  resize();
+}
+/* --------------------------- automatic fullscreen ------------------------- */
+/* The first touch anywhere asks for fullscreen and locks the orientation.  It
+   has to happen INSIDE that gesture: requestFullscreen and orientation.lock are
+   both user-activation-gated, and calling them a frame later silently does
+   nothing on half the browsers that support them.  Every failure is swallowed
+   on purpose — a desktop browser has no orientation lock to take, and refusing
+   to play because a request was declined would be absurd. */
+let fsDone = false;
+function enterFullscreen() {
+  if (fsDone) return;
+  fsDone = true;
+  const el = document.documentElement;
+  const rq = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+  /* Ask for the lock twice, and that is not belt-and-braces for its own sake:
+     Chrome grants orientation.lock only while already fullscreen, so the first
+     attempt (made synchronously, while the user-activation is still live) is
+     refused, and the second — on the promise settling — is the one that lands.
+     Both failures are swallowed, so the extra call costs nothing. */
+  lockLandscape();
+  if (!rq) return;
+  try {
+    const p = rq.call(el, { navigationUI: "hide" });
+    if (p && p.then) p.then(lockLandscape, lockLandscape);
+  } catch (e) {}
+}
+function lockLandscape() {
+  try {
+    const o = screen && screen.orientation;
+    if (o && typeof o.lock === "function") {
+      const p = o.lock("landscape");
+      if (p && p.catch) p.catch(() => {});
+    }
+  } catch (e) {}
+}
+if (typeof ResizeObserver !== "undefined") { try { new ResizeObserver(applyOrientation).observe(wrap); } catch (e) {} }
+/* Both of these re-derive the whole orientation, not just the size: a device
+   that physically turns is the one case where `rot` has to flip back */
+window.addEventListener("orientationchange", () => setTimeout(applyOrientation, 60));
+window.addEventListener("resize", applyOrientation);
+/* and again a beat later, because iOS and Android both report the OLD
+   innerWidth for one event after a rotation and only correct it on the next */
+window.addEventListener("orientationchange", () => setTimeout(applyOrientation, 320));
 
 /* ------------------------------ draw helpers ------------------------------ */
 function R(x, y, w, h, col) {
@@ -645,6 +1251,18 @@ const CFG = {
   CIN_LAND: 390,      /* 4 landing: he drops and lands on one knee           */
   CIN_CROWN: 450,     /* 5 victory outfit: crown, shades, cape              */
   CIN_MODAL: 540,     /* 6 the dialog arrives, once the cape is flying       */
+  /* --------------------- Legendary Overdrive (endless) ---------------- */
+  /* Past 100,000m the journey stops having an end, so the road tops out past
+     its own maximum and pays triple.  These are the only four numbers in it. */
+  OVER_SPEED: 12.4,    /* the overdrive's top speed — past MAX_SPEED        */
+  OVER_RAMP: 1400,     /* ms to ease into it; a jump in one frame reads as a bug */
+  OVER_COIN: 3,        /* Wi-Fi coins pay triple in the overdrive           */
+  OVER_BOSS_MIN: 9000, /* a random gate waits at least this long            */
+  OVER_BOSS_MAX: 21000,/* ...and at most this long                         */
+  /* ------------------- Google Play Games (silent sign-in) ------------- */
+  PLAY_BAN: 280,      /* the welcome banner's life, in frames (~4.7s)        */
+  PLAY_SLIDE: 16,     /* how many frames it takes to slide in or out         */
+  PLAY_WAIT: 2500,    /* ms a silent sign-in may take before we carry on     */
   BOSS_WAVE: 3.1,     /* how fast a boss projectile travels left            */
   WIN_COINS: 1000,    /* surviving 100,000m pays 1,000 bonus coins          */
   SLOW_MS: 2000,      /* bullet time lasts 2s                                */
@@ -685,7 +1303,13 @@ const CFG = {
   LASER_CD: 6000,     /* and the roar is a limited weapon: this long to recharge */
   COMBO_HIT: 5,       /* five kills in a row sets off the Laser Roar         */
   COMBO_MS: 2600,     /* kills must land within this window to chain         */
-  BOX_AMMO: 3         /* a [ROCKET] box carries three rockets                */
+  BOX_AMMO: 3,        /* a [ROCKET] box carries three rockets                */
+  /* The one true aspect ratio in this file.  The world is authored 384x216, the
+     canvas CSS box is locked to the same 16:9, and the auto-rotate swaps the
+     viewport to match it — so the layout, the art and the resizer can never
+     disagree about what shape the game is. */
+  RATIO_W: 16,
+  RATIO_H: 9
 };
 const G = {
   state: "ready", t: 0, frame: 0, blink: 0, distance: 0, score: 0, speed: 0, spd: 0,
@@ -698,6 +1322,13 @@ const G = {
   meters: 0, road: 0, slowT: 0, slowCd: 0, revive: 0, revived: false, runT: 0,
   boss: null, bossIdx: 0, bosses: [], warn: 0, waves: [],
   tower: null, winT: 0, toast: "", toastT: 0, proBack: "ready", proMsg: "", proMsgT: 0,
+  /* the endless mode that continues out of the victory dialog */
+  over: false, overT: 0, overBossT: 0, overBosses: 0,
+  /* the tag panel and the global board */
+  name: "", nameFrom: "ready", nameT: 0, nameAsked: false, boardBack: "ready", lbScroll: 0,
+  /* the Google Play welcome banner: `pb` counts the frames it has left and
+     `pbT` is the life it was given, so the slide in and out are one ratio */
+  pb: 0, pbT: 0,
   /* the cutscene's own state, all of it reset by win() and never by update() */
   cine: { step: 0, sig: 0, arc: 0, dust: 0, dustT: 0, cape: 0, shades: 0, fireT: 0, runT: 0 },
   cpN: 0, cpFlash: 0, lastParry: -1,
@@ -732,7 +1363,9 @@ function start() {
      next one a crown, a cape and a full tower */
   G.cine.step = 0; G.cine.sig = 0; G.cine.arc = 0; G.cine.dust = 0; G.cine.dustT = 0;
   G.cine.cape = 0; G.cine.shades = 0; G.cine.fireT = 0; G.cine.runT = 0;
+  G.over = false; G.overT = 0; G.overBossT = 0; G.overBosses = 0;
   G.combo = 0; G.comboT = 0; G.beamT = 0; G.beamCd = 0; G.beamY = 0; G.lastParry = -1; G.arc.length = 0;
+  G.pb = 0; G.pbT = 0;         /* a run never inherits a welcome banner      */
   P.x = Math.round(WW * 0.09);
   P.y = 0; P.vy = 0; P.air = 0; P.flip = -1; P.duck = false; P.dead = false; P.grind = null;
   P.shield = 0; P.spin = 0; P.spy = 0; P.spyT = 0; P.ghost = 0; P.sink = 0;
@@ -760,6 +1393,18 @@ function gameOver(reason) {
   shake(7, 22); Snd.sfx.die(); Snd.stop();
   if (navigator.vibrate) { try { navigator.vibrate(40); } catch (e) {} }
   if (G.score > save.best) { save.best = G.score; G.newBest = true; persist(); }
+  /* furthest-ever metres was only ever written by win(), so a run that died at
+     96,000m — or at 140,000m in the overdrive — recorded nothing at all */
+  const wasBest = G.meters > save.bestM;
+  if (wasBest) { save.bestM = G.meters; persist(); }
+  /* A new personal best is filed on the global board, and ONLY a new personal
+     best — a worse run has nothing to say to a table of bests. */
+  if (wasBest && save.name && save.bestM > LBS.sent) lbSubmit();
+  /* The cloud copy is pushed on the same beat, and only on the same beat: a new
+     personal best is the one moment something genuinely changed, and a worse
+     run has nothing to save and nothing to upload. */
+  if (wasBest) pgPush("best");
+  achCheck();                            /* a run that ended is a run that moved */
 }
 /* one free PRO revive: a golden energy shield blows the danger away */
 function revive() {
@@ -791,11 +1436,118 @@ function win() {
   save.skin = "gold";                           /* ...and he wears it out of the dialog */
   if (G.meters > save.bestM) save.bestM = G.meters;
   if (G.score > save.best) { save.best = G.score; G.newBest = true; }
-  clearCheckpoint(); persist(); Snd.sfx.victory(); Snd.stop();
+  clearCheckpoint(); persist(); achCheck(); Snd.sfx.victory(); Snd.stop();
+  pgPush("win");                       /* the crown, the 1,000 coins and the title all go up */
   confetti(150);
   for (let i = 0; i < 5; i++) firework();
 }
 function toast(m) { G.toast = m; G.toastT = 130; }
+/* CONTINUE RUNNING: the dialog closes and the run keeps going, past 100,000m,
+   at overdrive speed, wearing the crown and cape it just paid for.  Nothing
+   else has to be re-armed for that: the road was never gated on FINISH, only
+   the *end* of it was, so the transition is a state change and a clear-out. */
+function enterOverdrive() {
+  G.over = true; G.overT = 0; G.overBosses = 0;
+  G.state = "run"; G.winT = 0; G.speed = CFG.MAX_SPEED; G.spd = CFG.MAX_SPEED;
+  G.tower = null; G.boss = null; G.waves.length = 0;
+  /* the tower was parked centre-screen for a scene that is now over, and any
+     obstacle still on the road would kill the run on its first frame */
+  G.obs.length = 0; G.parts.length = 0; G.items.length = 0; G.itemT = 130;
+  G.bossIdx = BOSSES.length;                 /* the five gates are all behind us */
+  G.bosses = BOSSES.map(() => true);
+  G.warn = 90; G.cpFlash = 0; G.cpN = Math.floor(G.meters / CFG.CHECKPOINT);
+  G.overBossT = ri(CFG.OVER_BOSS_MIN, CFG.OVER_BOSS_MAX);
+  /* the crown, the shades and the cape are already on: they are on G.cine, and
+     nothing in this function may reset them, which is why it is a function */
+  G.flash = 40; shake(9, 40);
+  confetti(90); for (let i = 0; i < 3; i++) firework();
+  Snd.sfx.victory(); Snd.start();
+  toast("\u26a1 LEGENDARY OVERDRIVE \u26a1  3x COINS");
+}
+/* MAIN MENU: back to the title card, with nothing banked and nothing playing */
+function toMenu() {
+  clearCheckpoint();
+  G.state = "ready"; G.over = false; G.overT = 0; G.overBossT = 0; G.overBosses = 0;
+  G.winT = 0; G.tower = null; G.boss = null; G.waves.length = 0; G.parts.length = 0;
+  G.obs.length = 0; G.items.length = 0; G.speed = 0; G.spd = 0; G.t = 0;
+  G.cine.cape = 0; G.cine.shades = 0; G.cine.fireT = 0; G.cine.step = 0;
+  held.padSlide = false; Snd.stop(); Snd.sfx.click();
+}
+
+/* ---------------------------- the player tag ------------------------------ */
+/* Typing is the one thing a canvas genuinely cannot do well, so the field is a
+   real <input> placed over the canvas's own drawn field (see #namebox in the
+   stylesheet) and everything around it — the frame, the caret's label, the
+   rules, the buttons — is drawn by the game like every other pixel. */
+const NAME_FIELD = { x: 78, y: 0, w: 228, h: 22 };     /* world units, set by layout */
+const nameBox = () => document.getElementById("namebox");
+/* Ask for the keyboard.  Only ever called with the field displayed and from
+   inside a real gesture, which is the only moment a browser allows a programmatic
+   focus to raise the soft keyboard. */
+function focusNameBox() {
+  const el = nameBox();
+  if (el && el.classList && el.classList.contains("on") && el.focus)
+    { try { el.focus(); } catch (e) {} }
+}
+function openName(from) {
+  G.nameFrom = from || "ready"; G.name = save.name;
+  G.state = "name"; G.nameT = 0; held.padSlide = false;
+  const el = nameBox();
+  if (el) {
+    if (typeof el.value === "string") el.value = save.name;
+    if (el.classList) el.classList.add("on");
+    /* focus is user-activation-gated on some browsers and must be asked for
+       from inside the gesture, so it is asked for here and again on the panel's
+       first tap (see fieldPress) */
+    focusNameBox();
+  }
+  if (document.body && document.body.classList) document.body.classList.add("typing");
+  Snd.init(); Snd.sfx.click();
+}
+/* `keep` is false for exactly one caller — the SKIP key, the only control in
+   the game that means "no tag".  Escape is NOT a second SKIP: it is what the
+   Android soft keyboard's BACK key sends, so a player who typed a tag, dismissed
+   the keyboard and expected to keep it was silently losing it — and then
+   running under the old tag with no way to tell why.  Everything else commits
+   whatever is in the field, which is what every other field in every other
+   program does. */
+function commitName(keep) {
+  const el = nameBox();
+  let v = G.name;
+  if (el && typeof el.value === "string" && el.value !== undefined) v = el.value;
+  save.name = keep === false ? "" : cleanName(v);
+  G.name = save.name;
+  /* Asked once per session, whichever way it was answered: a player who has
+     already dealt with this panel does not get it again on their first crash,
+     which is how a panel turns into something you tap through. */
+  G.nameAsked = true;
+  persist();
+  const back = G.nameFrom === "over" ? "over" : "ready";
+  closeNameBox();
+  G.state = back;
+  Snd.sfx.click();
+  /* file the run they just tagged straight away, so the board is not empty
+     until they go and crash again */
+  if (save.name && save.bestM > LBS.sent) lbSubmit();
+}
+function closeNameBox() {
+  const el = nameBox();
+  if (el && el.classList) el.classList.remove("on");
+  if (el && el.blur) { try { el.blur(); } catch (e) {} }
+  if (document.body && document.body.classList) document.body.classList.remove("typing");
+}
+/* --------------------------- the global board ----------------------------- */
+function openBoard() {
+  G.boardBack = ["ready", "over", "pause", "run"].indexOf(G.state) >= 0 ? G.state : "ready";
+  G.state = "board"; G.lbScroll = 0;
+  closeNameBox();
+  Snd.sfx.click();
+  lbFetch();                                   /* real answer, not a spinner */
+}
+function closeBoard() {
+  G.state = G.boardBack === "run" ? "run" : (G.boardBack || "ready");
+  Snd.sfx.click();
+}
 function firework() {
   const x = rnd(WW - 30, 20), y = rnd(100, 14), col = pick([GOLD, CYAN, RED, PALE, INK]);
   for (let i = 0; i < 26; i++) {
@@ -1036,7 +1788,8 @@ function bossStart(i) {
              phase: 0, dive: 0, dash: 0, vx: 0, vy: 0, n: 0 };
   G.warn = 100; shake(8, 70); Snd.sfx.siren(); Snd.stop();
   /* the tutorial router gets its own shout, matching the video's alert */
-  toast(i === 0 ? "⚠️ ROUTER BOSS ⚠️" : "BOSS " + (i + 1) + "/5: " + d.name + " INCOMING");
+  toast(G.over ? "⚡ LEGENDARY GATE: " + d.name + " ⚡"
+       : i === 0 ? "⚠️ ROUTER BOSS ⚠️" : "BOSS " + (i + 1) + "/5: " + d.name + " INCOMING");
 }
 function bossHit(n, x, y) {
   const b = G.boss;
@@ -1058,7 +1811,8 @@ function bossDown() {
   G.flash = 24; Snd.sfx.victory();
   toast(b.d.name + " DESTROYED!  +" + b.d.coins + " COINS");
   G.bosses[b.i] = true;
-  G.bossIdx = b.i + 1;
+  G.bossIdx = G.over ? BOSSES.length : b.i + 1;
+  if (G.over) G.overBosses++;
   G.boss = null;
   writeCheckpoint();
 }
@@ -1350,7 +2104,10 @@ function hook() {
   if (!t) { toast("NO ANCHOR - FIND A CLOUD OR PTERODACTYL"); Snd.sfx.deny(); return; }
   P.hook = t; P.hookT = CFG.HOOK_MS;
   P.vy = 0; P.air = 0; P.flip = -1; P.grind = null; P.sink = 0;
-  G.combo = 0; G.comboT = 0;
+  /* the rope never breaks the chain: the window drains while you swing, so the
+     HUD bar is honest, but the tick spares G.combo mid-swing and the detach
+     below refills the window — a grapple over a cactus lands you still holding
+     the chain instead of punishing you for using the hook. */
   Snd.sfx.hook();
   toast("GRAPPLE!");
 }
@@ -1372,6 +2129,9 @@ function updateHook(dt) {
   if (P.hookT <= 0) {
     P.hookT = 0; P.hook = null;
     P.vy = jumpV() * 0.45; P.air = 1;
+    /* top the window back up on the way down: whatever the swing drained, you
+       land holding the same chain, so the rope can never break it */
+    if (G.combo > 0) G.comboT = CFG.COMBO_MS;
     G.bonus += CFG.HOOK_PTS;
     toast("NICE!");
     Snd.sfx.point();
@@ -1419,19 +2179,33 @@ function closePro() {
   if (G.state === "run") Snd.start();
   Snd.sfx.click();
 }
-function activatePro() {
-  if (save.pro) { save.pro = false; shopMsgSave(); Snd.sfx.deny(); }
-  else {
-    save.pro = true;
-    if (save.owned.indexOf("gold") === -1) save.owned.push("gold");
-    Snd.sfx.buy(); toast("PRO ACTIVATED - GOLDEN DINO UNLOCKED");
-  }
+/* The grant is one function because it now has three callers: bought, restored
+   after a reinstall, and the free web build.  All three must end up with
+   EXACTLY the same save state, and the only way to guarantee that is for them
+   to run the same lines. */
+function givePro(why) {
+  if (save.pro) return false;
+  save.pro = true;
+  if (save.owned.indexOf("gold") === -1) save.owned.push("gold");
   persist(); refreshProChip();
+  BILLS.owned = true;
+  achCheck();
+  return true;
+}
+function activatePro() {
+  if (save.pro) { save.pro = false; persist(); refreshProChip(); shopMsgSave(); Snd.sfx.deny(); return; }
+  if (!BILLS.store) {                   /* the web build: no checkout to run */
+    givePro("free");
+    Snd.sfx.buy(); toast("PRO ACTIVATED - GOLDEN DINO UNLOCKED");
+    return;
+  }
+  billPurchase();                       /* a store exists: never free */
 }
 function shopMsgSave() { G.proMsg = "PRO PASS DEACTIVATED"; G.proMsgT = 100; }
 function slidePress() {
   if (G.state === "over") { if (G.t > G.restartAt) resume(); return; }
   if (G.state === "win") { return; }
+  if (G.state === "name" || G.state === "board") { return; }   /* the field has the keyboard */
   if (G.state === "ready") { clearCheckpoint(); start(); return; }
   if (G.state === "pause") { G.state = "run"; Snd.start(); return; }
   held.padSlide = true;
@@ -1470,6 +2244,22 @@ const KEYS = {
   KeyP: "pause", Escape: "pause", KeyM: "mute"
 };
 window.addEventListener("keydown", e => {
+  if (G.state === "name") {                            /* the tag panel owns the keyboard */
+    /* The field itself is a real input and eats printable keys on its own, so
+       this handler must only take the keys the input cannot: commit, dismiss,
+       and STOP, so a player who does not want a tag is never trapped here. */
+    if (e.code === "Enter") { e.preventDefault(); commitName(true); return; }
+    /* the soft keyboard's BACK key arrives here, so this commits what was typed
+       rather than throwing it away — see commitName() */
+    if (e.code === "Escape") { e.preventDefault(); commitName(true); return; }
+    return;
+  }
+  if (G.state === "board") {                           /* the global board owns the keyboard */
+    e.preventDefault();
+    if (e.code === "Escape" || e.code === "KeyP" || e.code === "Enter" || e.code === "Space") closeBoard();
+    else if (e.code === "KeyR") { lbFetch(); Snd.sfx.click(); }
+    return;
+  }
   if (G.state === "pro") {                             /* the VIP modal owns the keyboard */
     e.preventDefault();
     if (e.code === "Escape" || e.code === "KeyP") closePro();
@@ -1549,12 +2339,25 @@ bindButton("bPro", openPro);
    airborne is the 360 backflip double jump, a downward drag is a slide, and
    the hoverboard is only ever deployed by RIDE or H. */
 let gest = null;
-const isUi = t => !!(t && t.closest && (t.closest("#pad") || t.closest("#topbar")));
+/* Anything the game must keep its hands off: the pad, the top bar, and the real
+   <input> behind the tag field.  Leaving #namebox out of this list was the bug
+   that made the tag untypable on a phone — the wrap's touchstart handler then
+   preventDefault()ed every touch on the field, and a prevented touchstart is a
+   focus and a soft keyboard the browser is not allowed to give. */
+const isUi = t => !!(t && t.closest && (t.closest("#pad") || t.closest("#topbar") || t.closest("#namebox")));
 function fieldPress(e) {
   if (isUi(e.target)) return;
   Snd.init(); Snd.resume();
+  /* the first touch anywhere on the screen is also the request for fullscreen —
+     inside the gesture itself, which is the only moment the browser allows it */
+  enterFullscreen();
+  applyOrientation();
   const p = toWorld(e), hit = hitUI(p.x, p.y);
   if (hit) { onUI(hit); return; }
+  /* the tag panel: a press that is not on one of its buttons is a request to
+     type, so hand the keyboard to the real input — the panel's own comment
+     promises this tap and nothing was doing it */
+  if (G.state === "name") { focusNameBox(); return; }
   gest = { id: e.pointerId, x: e.clientX, y: e.clientY, acted: false };
   /* the first tap is the door: it starts, resumes or restarts, and never jumps */
   if (G.state === "ready") { start(); return; }
@@ -1578,7 +2381,12 @@ wrap.addEventListener("touchstart", e => {
 }, { passive: false });
 wrap.addEventListener("pointermove", e => {
   if (!gest || e.pointerId !== gest.id || gest.acted) return;
-  const dx = e.clientX - gest.x, dy = e.clientY - gest.y;
+  /* The gesture is measured in the player's frame, not the screen's: when the
+     box is rotated, "down" on the screen is "left" inside the game, so an
+     un-rotated swipe test turned every slide into a miss.  Undo the rotation on
+     the delta exactly as toWorld() does on the point. */
+  let dx = e.clientX - gest.x, dy = e.clientY - gest.y;
+  if (rot) { const t = dx; dx = dy; dy = -t; }
   if (Math.abs(dy) > 26 && Math.abs(dy) > Math.abs(dx)) {
     if (dy > 0) {
       /* a downward drag was always meant as a slide, not a hop: if the press
@@ -1709,12 +2517,17 @@ function spawnItems(boss) {
     for (let i = 0; i < 3; i++) G.items.push({ k: "coin", x: x + i * 19, y: GROUND - h, w: 11, h: 8 });
   }
 }
+/* What one Wi-Fi coin pays right now.  PRO doubles it and the overdrive triples
+   it, and they STACK rather than replace each other: a PRO player who keeps
+   running past the tower should be paid six a coin, not be quietly demoted
+   back to three by the mode that is supposed to be the reward. */
+const coinMul = () => (G.over ? CFG.OVER_COIN : 1) * (save.pro ? CFG.PRO_COINS : 1);
 function collect(it) {
   if (it.k === "coin") {
-    const n = save.pro ? CFG.PRO_COINS : 1;      /* PRO: double coins */
+    const n = coinMul();
     save.coins += n; G.coinN++; G.bonus += 1;
     if (G.coinN % 10 === 0) persist();
-    burst(it.x + 5, it.y + 4, 6, 1.8, 12, save.pro ? GOLD : null);
+    burst(it.x + 5, it.y + 4, 6, 1.8, 12, n > 1 ? GOLD : null);
     Snd.sfx.coin();
   } else if (it.k === "board") {
     save.boards = Math.min(99, save.boards + 1); persist();
@@ -1755,7 +2568,7 @@ function update() {
   G.t += STEP; G.frame++; G.blink++;
   /* the run clock: the finale reports a time, and a time has to be measured
      somewhere that is not the cutscene that prints it */
-  if (G.state === "run") G.runT += STEP;
+  if (G.state === "run") { G.runT += STEP; if (G.over) G.overT += STEP; }
   if (G.shakeT > 0) G.shakeT--;
   if (G.flash > 0) G.flash--;
   if (G.cool > 0) G.cool = Math.max(0, G.cool - STEP / 1000);
@@ -1764,11 +2577,19 @@ function update() {
   if (G.shopMsgT > 0) G.shopMsgT--;
   if (G.proMsgT > 0) G.proMsgT--;
   if (G.toastT > 0) G.toastT--;
+  if (G.pb > 0) G.pb--;
   if (G.warn > 0) G.warn--;
   if (G.cpFlash > 0) G.cpFlash--;
   if (G.slowT > 0) G.slowT = Math.max(0, G.slowT - STEP);
   if (G.slowCd > 0) G.slowCd = Math.max(0, G.slowCd - STEP);
-  if (G.comboT > 0) { G.comboT = Math.max(0, G.comboT - STEP); if (G.comboT === 0) G.combo = 0; }
+  /* the combo window drains even mid-swing, so its HUD bar really shrinks — but
+     the chain itself is not spent while the rope is up; a grapple refills the
+     window on detach (see updateHook), which is what keeps a swing from ever
+     being the thing that breaks the chain. */
+  if (G.comboT > 0) {
+    G.comboT = Math.max(0, G.comboT - STEP);
+    if (G.comboT === 0 && P.hookT <= 0) G.combo = 0;
+  }
   if (G.beamT > 0) G.beamT = Math.max(0, G.beamT - STEP);
   if (G.beamCd > 0) G.beamCd = Math.max(0, G.beamCd - STEP);
   if (G.state === "run" && !P.dead) updatePowerups(STEP);
@@ -1790,7 +2611,7 @@ function update() {
     s.x -= drift * 0.06 * s.k;
     if (s.x < -24) { s.x = WW + rnd(0, 140); s.y = ri(8, 104); }
   }
-  if (G.state === "shop" || G.state === "pro") return;   /* the track is frozen, the sky isn't */
+  if (G.state === "shop" || G.state === "pro" || G.state === "board" || G.state === "name") return;
 
   /* Clouds are always in the sky, on every screen: they are the scenery, and
      they are also the only anchor a grappling hook can reach.  They spawn in a
@@ -1814,6 +2635,12 @@ function update() {
   }
   if (G.state === "ready") return;
   if (G.state === "win") { winUpdate(); return; }
+  /* The first crash of a session with no tag asks for one — ONCE.  Asking on
+     every single crash would be nagging, and nagging is how a player stops
+     opening the game. */
+  if (G.state === "over" && !save.name && !G.nameAsked && G.t > G.restartAt) {
+    G.nameAsked = true; openName("over"); return;
+  }
   if (P.dead) return;
 
   /* -------------------------------- player -------------------------------- */
@@ -1853,17 +2680,37 @@ function update() {
      smoothstep carries the pace the rest of the way to the tower. */
   const t = clamp((G.road - CFG.EASE_IN) / (CFG.RAMP - CFG.EASE_IN), 0, 1);
   const ease = t * t * (3 - 2 * t);
-  G.speed = CFG.SPEED + (CFG.MAX_SPEED - CFG.SPEED) * ease;
+  /* Past the tower the road stops easing toward MAX_SPEED and eases past it:
+     the overdrive reaches OVER_SPEED, and it takes OVER_RAMP ms to get there,
+     because a speed that jumps 30% inside a single frame reads as a bug. */
+  if (G.over) {
+    const k = clamp(G.overT / CFG.OVER_RAMP, 0, 1);
+    G.speed = CFG.MAX_SPEED + (CFG.OVER_SPEED - CFG.MAX_SPEED) * (k * k * (3 - 2 * k));
+  } else {
+    G.speed = CFG.SPEED + (CFG.MAX_SPEED - CFG.SPEED) * ease;
+  }
   G.spd = G.speed * (G.slowT > 0 ? CFG.SLOW_SCALE : 1);
   G.distance += G.spd;
   if (!G.boss) G.road += G.spd;
-  G.meters = Math.min(CFG.FINISH, Math.floor(G.road * CFG.M_PER_UNIT));
+  /* The metre counter stops capping at the finish line once the run has
+     continued past it — clamping it would pin the HUD at 100,000m forever and
+     the whole point of the overdrive is that the number keeps climbing. */
+  G.meters = G.over ? Math.floor(G.road * CFG.M_PER_UNIT)
+                    : Math.min(CFG.FINISH, Math.floor(G.road * CFG.M_PER_UNIT));
   G.score = Math.floor(G.distance * 0.025) + G.bonus;
-  if (G.meters >= CFG.FINISH) { win(); return; }
+  if (!G.over && G.meters >= CFG.FINISH) { win(); return; }
   /* checkpoints: a snapshot every 10,000m, so a crash is never a total loss */
   const cpN = Math.floor(G.meters / CFG.CHECKPOINT);
   if (cpN > G.cpN) { G.cpN = cpN; writeCheckpoint(); G.cpFlash = 90; Snd.sfx.buy(); toast("CHECKPOINT " + fmtM(cpN * CFG.CHECKPOINT) + "m SAVED"); }
-  if (!G.boss && G.bossIdx < BOSSES.length && G.meters >= BOSSES[G.bossIdx].at) bossStart(G.bossIdx);
+  if (!G.over && !G.boss && G.bossIdx < BOSSES.length && G.meters >= BOSSES[G.bossIdx].at) bossStart(G.bossIdx);
+  /* Legendary Overdrive has no gates left, so it grows its own: a random boss
+     on a random timer, and the next one only armed once the last is down. */
+  if (G.over && !G.boss && --G.overBossT <= 0) {
+    const pick2 = ri(BOSSES.length - 1, 0);
+    bossStart(pick2);
+    G.bossIdx = BOSSES.length;         /* the fixed chain must never re-arm */
+    G.overBossT = ri(CFG.OVER_BOSS_MAX, CFG.OVER_BOSS_MIN);
+  }
   if (G.boss) { bossUpdate(); if (P.dead) return; }
   if (--G.itemT <= 0) { G.itemT = G.boss ? ri(30, 56) : ri(130, 300); spawnItems(!!G.boss); }
   for (let i = G.items.length - 1; i >= 0; i--) {
@@ -1981,13 +2828,17 @@ function panel(x, y, w, h) {
   R(x + 4, y + 4, w - 8, 1, mixHex(INK, PAPER, 0.88));      /* inner hairline */
 }
 /* A button reads as a physical key: a filled face when active, a hairline bevel
-   and a shadow when idle, so the panel has depth without adding colour. */
-function button(x, y, w, h, id, label, size, hot) {
+   and a shadow when idle, so the panel has depth without adding colour.
+   `accent` fills an active key in a colour instead of ink — the leaderboard
+   gets a gold one, because it is the only button in the game that is about
+   other people and it should not look like the four next to it. */
+function button(x, y, w, h, id, label, size, hot, accent) {
   ui.push({ x, y, w, h, id });
   const s = size || 10;
+  const face = hot ? (accent || INK) : PAPER;
   if (hot) {
-    R(x, y, w, h, INK);
-    R(x + 2, y + 2, w - 4, 1, mixHex(PAPER, INK, 0.35));    /* top bevel */
+    R(x, y, w, h, face);
+    R(x + 2, y + 2, w - 4, 1, mixHex(PAPER, face, 0.35));    /* top bevel */
   } else {
     R(x + 1, y + 2, w, h, mixHex(INK, PAPER, 0.82));        /* shadow */
     R(x, y, w, h, PAPER);
@@ -1996,7 +2847,9 @@ function button(x, y, w, h, id, label, size, hot) {
   }
   R(x, y, w, 2, INK); R(x, y + h - 2, w, 2, INK);
   R(x, y, 2, h, INK); R(x + w - 2, y, 2, h, INK);
-  TXT(label, x + w / 2, y + h / 2 + s * 0.36, s, hot ? PAPER : INK, "center", 1.2);
+  /* a gold face carries dark gold text; an ink face carries paper */
+  TXT(label, x + w / 2, y + h / 2 + s * 0.36, s,
+      hot ? (accent ? mixHex(accent, INK, 0.55) : PAPER) : INK, "center", 1.2);
 }
 /* A section heading with a rule that runs to the panel edge: the one bit of
    structure every panel shares, so the menus read as a family. */
@@ -2016,7 +2869,24 @@ function toWorld(e) {
   /* getBoundingClientRect is CSS px but S counts device px, so taps used to be
      scaled by the pixel ratio and every button below-right of centre missed */
   const k = CSS || r.width / WW;
-  return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
+  if (!rot) return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
+  /* THE ROTATED CASE.  A 90-degree CSS transform does not change what
+     getBoundingClientRect reports as left/top — it reports the AXIS-ALIGNED BOX
+     of the rotated result, which for a landscape box turned inside a portrait
+     screen is a completely different rectangle from the one the player is
+     looking at.  Naively subtracting r.left/r.top here put every touch a whole
+     screen out of position.
+     The fix is to undo the rotation by hand: work in the rotated frame's own
+     centre, which the rect's centre still coincides with (a rotation about the
+     centre preserves it), then map the point through the inverse 90 degrees. */
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const dx = e.clientX - cx, dy = e.clientY - cy;
+  /* inverse of rotate(90deg): (dx,dy) -> (dy,-dx), then out from the centre */
+  const ux = dy, uy = -dx;
+  /* the shell's own pre-transform size: when rotated, the rect's width and
+     height are the game's height and width the other way round */
+  const bw = rot ? r.height : r.width, bh = rot ? r.width : r.height;
+  return { x: (ux + bw / 2) / k, y: (uy + bh / 2) / k };
 }
 function shopMsg(m) { G.shopMsg = m; G.shopMsgT = 100; }
 function openShop(back) {
@@ -2047,9 +2917,16 @@ function shopPick(i) {
     if (save.coins < sk.cost) { shopMsg("NOT ENOUGH COINS - NEED " + (sk.cost - save.coins)); Snd.sfx.deny(); return; }
     save.coins -= sk.cost; save.owned.push(sk.id); save.skin = sk.id;
     persist(); shopMsg("UNLOCKED " + sk.name); Snd.sfx.buy();
+    pgPush("unlock");                 /* the new skin is in the cloud slot before the message fades */
+    achCheck();                       /* the last skin in the wardrobe is an achievement */
     return;
   }
-  if (save.skin !== sk.id) { save.skin = sk.id; persist(); shopMsg("EQUIPPED " + sk.name); Snd.sfx.buy(); return; }
+  if (save.skin !== sk.id) {
+    save.skin = sk.id; persist(); shopMsg("EQUIPPED " + sk.name); Snd.sfx.buy();
+    pgPush("equip");
+    achCheck();
+    return;
+  }
   shopMsg(sk.name + " IS ALREADY EQUIPPED");
 }
 function shopFlip(d) {
@@ -2069,12 +2946,31 @@ function onUI(b) {
     return;
   }
   if (b.id === "again") { clearCheckpoint(); start(); return; }
+  if (b.id === "over") { enterOverdrive(); return; }
+  if (b.id === "home") { toMenu(); return; }
+  if (b.id === "board") { openBoard(); return; }
+  if (b.id === "boardclose") { closeBoard(); return; }
+  if (b.id === "boardrefresh") { lbFetch(); Snd.sfx.click(); return; }
+  if (b.id === "namego") { commitName(true); return; }
+  if (b.id === "nameskip") { commitName(false); return; }
+  if (b.id === "nameedit") { openName(G.state === "over" ? "over" : "ready"); return; }
   if (b.id === "shop") { openShop(G.state === "over" ? "over" : G.state === "win" ? "win" : "ready"); return; }
   if (b.id === "proui") { openPro(); return; }
   if (b.id === "newrun") { clearCheckpoint(); start(); Snd.sfx.click(); return; }
   if (b.id === "close") { closeShop(); return; }
   if (b.id === "proclose") { closePro(); return; }
   if (b.id === "proon") { activatePro(); return; }
+  if (b.id === "prorestore") {
+    if (!BILLS.store) return;
+    BILLS.busy = true;
+    billQuery(false).then(ok => {
+      BILLS.busy = false;
+      G.proMsg = ok ? "PRO RESTORED - THANK YOU" : "NOTHING TO RESTORE ON THIS ACCOUNT";
+      G.proMsgT = 140;
+      if (ok) Snd.sfx.buy(); else Snd.sfx.deny();
+    });
+    return;
+  }
   if (b.id === "boardpack") { buyBoardPack(); return; }
   if (b.id.indexOf("skin:") === 0) shopPick(+b.id.slice(5));
 }
@@ -2258,7 +3154,7 @@ function drawDino() {
     TXT(left.toFixed(1) + "s", dx + SPR[key].w / 2, dy - 6, 8, mixHex(SOFT, PAPER, 0.15), "center", 1.2);
     if (P.spyT < 1500 && ((G.blink / 4) | 0) % 2 === 0) Snd.sfx.ghost();
   }
-  if (G.state === "win") drawVictoryOutfit(dx, dy, key, rot);
+  if (G.state === "win" || G.over) drawVictoryOutfit(dx, dy, key, rot);
 }
 /* The Emperor outfit: a crown that drops onto his head and settles, shades that
    snap on, and a cape that flutters behind him.  All three fade in rather than
@@ -2277,7 +3173,7 @@ function drawVictoryOutfit(dx, dy, key, rot) {
     /* the cape sits behind him, so it is drawn before the body would be — here
        it is drawn after, which is fine: it hangs to the BACK of the sprite and
        the dino's ink is opaque, so the overlap reads as depth, not as a bug */
-    const f = Math.sin(G.winT / 7) * 3;
+    const f = Math.sin((G.over ? G.overT : G.winT) / 7) * 3;
     const cx = dx - 10 - c.cape * 4, cy = dy + 6;
     for (let i = 0; i < 5; i++) {
       const w = 12 - i * 1.6, s = f * (i + 1) * 0.32;
@@ -2324,6 +3220,9 @@ const HUD = {
   rA: 26, rB: 48,     /* the right cluster's two baselines                   */
   chargeY: 59,        /* the limited weapons' recharges, under the score     */
   chargeY2: 68,       /* ...one per line, so the two can never collide        */
+  hookY: 80,          /* the live combo, held open by a grapple (only then)  */
+  hookBarY: 85,       /* ...and the window it is holding, as a shrinking bar */
+  hookBarW: 40,
   barW: 124, barY: 58,
   seedY: 74,          /* checkpoint / best-metres, centred                    */
   toastY: 88,
@@ -2338,7 +3237,8 @@ function drawHud() {
   /* ---- top-left: the wallet and the arsenal, on two tidy rows ---- */
   SPT("wifi", HUD.L, HUD.iconA, 0);
   TXT(String(save.coins), HUD.L + 16, HUD.rowA, 13, INK, "left");
-  if (save.pro) TXT("x" + CFG.PRO_COINS, HUD.L + 16 + TW(String(save.coins), 13) + 4, HUD.rowA, 8, GOLD, "left");
+  const mul = coinMul();
+  if (mul > 1) TXT("x" + mul, HUD.L + 16 + TW(String(save.coins), 13) + 4, HUD.rowA, 8, GOLD, "left");
   SPT("rocket", 84, HUD.iconA + 1, 0);
   TXT("x" + G.ammo, 101, HUD.rowA, 13, G.ammo > 0 ? INK : FAINT, "left");
   /* the pistol's belt rides on the same arsenal row, right of the rockets, and
@@ -2372,6 +3272,18 @@ function drawHud() {
     TXT("SLOW " + (G.slowCd / 1000).toFixed(1) + "s", HUD.R, HUD.chargeY, 7, FAINT, "right");
   if (G.beamCd > 0 && G.beamT <= 0 && G.state === "run")
     TXT("LASER " + (G.beamCd / 1000).toFixed(1) + "s", HUD.R, HUD.chargeY2, 7, FAINT, "right");
+  /* a swing keeps the chain alive, so while the rope owns the frame that chain
+     is worth reading: the count rides a band of its own, under the recharges,
+     and only while the hook is in the air — and the bar under it is the window,
+     draining as you fly.  Empty is not lost: the detach tops it back up, so the
+     bar may run out mid-swing and still leave the chain intact. */
+  if (P.hookT > 0 && G.combo > 0 && G.state === "run") {
+    TXT("COMBO x" + G.combo, HUD.R, HUD.hookY, 8, GOLD, "right");
+    const bw = HUD.hookBarW, bx = HUD.R - bw, by = HUD.hookBarY;
+    const bp = clamp(G.comboT / CFG.COMBO_MS, 0, 1);
+    R(bx, by, bw, 2, FAINT);
+    R(bx, by, Math.max(1, bw * bp), 2, bp < 0.3 ? RED : GOLD);
+  }
   if (G.toastT > 0) {
     const blink = G.toastT > 100 ? ((G.blink / 6) | 0) % 2 === 0 : true;
     if (blink) TXT(G.toast, WW / 2, HUD.toastY, 12, RED, "center", 1.6);
@@ -2392,7 +3304,11 @@ function drawProgress() {
     R(x + w * (BOSSES[i].at / CFG.FINISH) - 1, y - 3, 3, 9, G.bosses[i] ? GOLD : RED);
   }
   SPT("wifi", HUD.barR + 6, y - 3, 0);
-  TXT("100,000m", HUD.barR + 20, y + 6, 7, SOFT, "left");
+  /* the bar is the journey, and the journey is finished once you are past it —
+     so in the overdrive it is relabelled ENDLESS and reads the live distance,
+     because a progress bar pinned at 100% next to a counter still climbing is
+     the one combination that reads as a bug */
+  TXT(G.over ? "ENDLESS " + fmtM(G.meters) + "m" : "100,000m", HUD.barR + 20, y + 6, 7, G.over ? GOLD : SOFT, "left");
   SPT("classic_idle", x + w * p - 8, y - 17, 0, 0, p >= 1 ? GOLD : INK, 0.4);
   TXT(Math.floor(p * 100) + "%", x - 10, y + 7, 9, p >= 1 ? GOLD : INK, "right");
   const cp = checkpointAt();
@@ -2408,7 +3324,8 @@ function drawBossBar() {
   R(x - 1, y - 1, w + 2, 8, PAPER);
   R(x, y, w, 6, FAINT);
   R(x, y, w * clamp(b.hp / b.max, 0, 1), 6, b.hurt > 0 ? PALE : RED);
-  TXT("BOSS " + (b.i + 1) + "/5 · " + b.d.name, WW / 2, y - 4, 8, INK, "center", 1.4);
+  TXT(G.over ? "⚡ " + b.d.name + " ⚡" : "BOSS " + (b.i + 1) + "/5 · " + b.d.name,
+      WW / 2, y - 4, 8, INK, "center", 1.4);
   if (b.d.id === "meteor") {                    /* it is coming down: say how long */
     const v = Math.max(0.5, 0.07 + 0.0006 * b.t);
     TXT("IMPACT IN " + Math.max(0, Math.ceil((GROUND - b.d.h - b.y) / v / 60)) + "s", WW / 2, y + 16, 9, RED, "center", 1.6);
@@ -2473,13 +3390,201 @@ function drawBeam() {
   R(P.x + 18, y - 1, WW - P.x, 2, PAPER);
   for (let i = 0; i < 5; i++) R(P.x + 24 + i * 6, y - 6 + i, 3, 12 - i * 2, mixHex(CYAN, PAPER, 0.45));
 }
+/* A leaderboard row carries a skin id that arrived over the network, so it can
+   be anything at all — including nothing.  SPT would throw on an unknown key
+   and take the whole frame with it, so the name is checked, not trusted. */
+const skinIdle = id => (SPR[id + "_idle"] ? id + "_idle" : "classic_idle");
+/* ------------------------- the Google Gamer Icon -------------------------- */
+/* A Gamer Icon is a network image, and this game has never loaded one: every
+   pixel it has ever drawn was a fillRect, which is the whole reason the APK is
+   a single file with no assets.  So the icon is DERIVED instead of fetched.
+   A Player ID is a stable string, and 32 rectangles of it make a face that is
+   the same player on every device they sign in from, downloads nothing, and
+   survives being offline forever.
+
+   The bits come from an FNV-1a hash of the ID and are mirrored left-to-right,
+   which is what makes it read as a face rather than as static. */
+const pgHash = s => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+};
+function drawGamerIcon(x, y, size) {
+  /* the id if we have one, and the tag if we do not, so the icon a player sees
+     is always tied to an identity and never to an empty string */
+  const key = PGS.id || save.pid || gamerTag();
+  const h = pgHash(key), c = size / 8;
+  const a = mixHex(INK, GOLD, ((h >>> 5) & 255) / 255);
+  const b = mixHex(INK, CYAN, ((h >>> 13) & 255) / 255);
+  R(x, y, size, size, mixHex(INK, PAPER, 0.88));
+  for (let r = 0; r < 7; r++) for (let q = 0; q < 4; q++) {
+    if (((h >>> (r * 4 + q)) & 1) === 0) continue;
+    R(x + q * c, y + r * c, c, c, a);
+    R(x + (7 - q) * c, y + r * c, c, c, a);
+  }
+  /* the last row is a mouth, in the second colour, so the tile has a face on it */
+  for (let q = 0; q < 4; q++) if (((h >>> (28 + q)) & 1) === 1) {
+    R(x + q * c, y + 7 * c, c, c, b);
+    R(x + (7 - q) * c, y + 7 * c, c, c, b);
+  }
+  R(x, y, size, 1, INK); R(x, y + size - 1, size, 1, INK);
+  R(x, y, 1, size, INK); R(x + size - 1, y, 1, size, INK);
+}
+/* ----------------------- the Google Play welcome banner ------------------- */
+/* Drawn, not native — and that is honest rather than a compromise.  A silent
+   sign-in cannot legally post a system notification, and a web game in a
+   WebView has no way to ask for one; so the game paints the banner itself, in
+   Play's own green, sliding down from the top edge exactly like the real one
+   and leaving again before anyone can tap it.  It is a greeting, not a control:
+   nothing here is a button, and the player cannot miss the game behind it. */
+function drawPlayBanner() {
+  if (G.pb <= 0) return;
+  const slide = CFG.PLAY_SLIDE;
+  const inT = G.pbT - G.pb;            /* frames since it was armed */
+  const outT = G.pb;                   /* frames until it is gone   */
+  /* One position for both ends: 0 is entirely above the top edge, 1 is fully
+     in.  The way in starts a frame late and the way out ends a frame early, so
+     a banner with barely any life left is not drawn at all — a notification
+     clipped by one pixel is worse than one that has not arrived yet. */
+  const e = inT < slide ? clamp((inT - 1) / (slide - 1), 0, 1)
+        : outT < slide ? clamp(outT / slide, 0, 1)
+        : 1;
+  if (e <= 0) return;
+  const w = 264, h = 36, x = (WW - w) / 2, y = 4 - (h + 4) * (1 - e);
+  R(x + 2, y + 3, w, h, mixHex(INK, PAPER, 0.2));      /* drop shadow   */
+  R(x, y, w, h, "#0b7a3e");                            /* Play green    */
+  R(x, y, 3, h, "#34a853");                            /* the left edge */
+  R(x, y, w, 1, "#5cd08c");                            /* top highlight */
+  drawGamerIcon(x + 8, y + 7, 22);
+  TXT("🎮 Welcome back, " + gamerTag() + "!", x + 36, y + 17, 9, "#ffffff", "left", 0.6);
+  /* the second line is the retrieval, made visible: the Player ID came back
+     from Google, and the cloud slot is what keeps it across devices */
+  TXT("PLAYER ID " + (PGS.id ? PGS.id : "—") + "  ·  CLOUD SAVE ON", x + 36, y + 29, 6,
+      "#9fe8c0", "left", 0.4);
+}
+/* ----------------------------- the tag panel ------------------------------ */
+function drawName() {
+  const w = 344, h = 213, x = (WW - w) / 2, y = 1;
+  const by = chromeDialog(x, y, w, h, "Pixel Dino — set up your player");
+  TXT("🏷️  YOUR PLAYER TAG", x + w / 2, by + 16, 13, INK, "center", 2.6);
+  TXT("This is the name every player on the global board sees.", x + w / 2, by + 30, 7.5, SOFT, "center", 0.4);
+  TXT("Up to 12 characters.  Change it whenever you like.", x + w / 2, by + 40, 6.5, FAINT, "center", 0.4);
+  /* the field: the frame is the game's, the ink and the caret are the
+     platform's, and the real input is sized onto exactly this box below */
+  const f = { x: x + 58, y: by + 52, w: w - 116, h: 22 };
+  const el = nameBox();
+  if (el && typeof el.value === "string") G.name = el.value;
+  const typed = G.name || "";
+  R(f.x - 3, f.y - 3, f.w + 6, f.h + 6, mixHex(INK, PAPER, 0.86));
+  R(f.x, f.y, f.w, f.h, PAPER);
+  R(f.x, f.y, f.w, 2, GOLD); R(f.x, f.y + f.h - 2, f.w, 2, GOLD);
+  R(f.x, f.y, 2, f.h, GOLD); R(f.x + f.w - 2, f.y, 2, f.h, GOLD);
+  if (!typed) TXT("TYPE YOUR TAG", f.x + f.w / 2, f.y + f.h / 2 + 3, 8, FAINT, "center", 1.4);
+  /* the game's own caret, blinking over the invisible platform one */
+  if (el && el.classList && el.classList.contains("on") && ((G.blink / 18) | 0) % 2 === 0) {
+    const cw = Math.max(8, typed.length * 6.6);
+    R(f.x + f.w / 2 + cw / 2 + 2, f.y + 4, 2, f.h - 8, INK);
+  }
+  TXT(String(typed.length) + " / " + NAME_MAX, f.x + f.w - 4, f.y - 6, 6, FAINT, "right");
+  /* ...and the input is put exactly on top of it, in percentages of the shell,
+     so the two cannot drift apart at any screen size */
+  if (el && el.style && el.classList && el.classList.contains("on")) {
+    el.style.left = (f.x / WW * 100).toFixed(3) + "%";
+    el.style.top = (f.y / WH * 100).toFixed(3) + "%";
+    el.style.width = (f.w / WW * 100).toFixed(3) + "%";
+    el.style.height = (f.h / WH * 100).toFixed(3) + "%";
+  }
+  TXT(touchUI ? "TAP THE BOX AND USE YOUR KEYBOARD" : "TYPE, THEN ENTER — ESC KEEPS IT TOO", x + w / 2, by + 84, 6.5, FAINT, "center");
+  button(x + 14, by + 92, 154, 19, "namego", "✅  SAVE & PLAY", 9, true);
+  button(x + 176, by + 92, 154, 19, "nameskip", "SKIP", 9);
+  R(x + 12, by + 118, w - 24, 1, mixHex(INK, PAPER, 0.85));
+  TXT("YOU WILL RUN AS", x + w / 2, by + 128, 6.5, SOFT, "center", 1.6);
+  const sk = (SKINS.find(s => s.id === save.skin) || SKINS[0]);
+  SPT(skinIdle(save.skin), x + w / 2 - 16, by + 132, 0, 0, null, 0.72);
+  TXT(sk.name.toUpperCase(), x + w / 2 + 22, by + 143, 8, GOLD, "left", 0.8);
+  TXT("NO TAG, NO SCORES — YOU CAN ALWAYS PLAY WITHOUT ONE", x + w / 2, by + 160, 6, FAINT, "center");
+}
+/* -------------------------- the global leaderboard ------------------------ */
+function drawBoard() {
+  const w = 344, h = 213, x = (WW - w) / 2, y = 1;
+  const by = chromeDialog(x, y, w, h, "Global Leaderboard");
+  TXT("🏆  GLOBAL LEADERBOARD", x + w / 2, by + 16, 12, GOLD, "center", 3.4);
+  /* The status line is the honest part: a board that cannot be reached says
+     OFFLINE, rather than showing an empty table that reads as "nobody has
+     ever played this game" — which is the one lie this panel must not tell. */
+  const live = LBS.status === "LIVE";
+  const head = LBS.status === "LIVE" ? "● LIVE  ·  " + fmtM(LBS.total) + " RUNS FILED"
+             : LBS.status === "CONNECTING" ? "◌ CONNECTING…"
+             : "⚠ OFFLINE" + (LBS.err ? "  ·  " + LBS.err : "");
+  TXT(head, x + w / 2, by + 28, 7, live ? INK : LBS.status === "CONNECTING" ? SOFT : RED, "center", 1.2);
+  const cR = x + 14, cN = x + 62, cM = x + w - 14;
+  TXT("RANK", cR, by + 40, 6.5, SOFT, "left", 1.6);
+  TXT("PLAYER", cN, by + 40, 6.5, SOFT, "left", 1.6);
+  TXT("METRES", cM, by + 40, 6.5, SOFT, "right", 1.6);
+  R(x + 12, by + 44, w - 24, 1, mixHex(INK, PAPER, 0.8));
+  /* the row, shared by the top seven and the pinned bottom one */
+  const row = (i, r, mine, rank) => {
+    const ry = by + 55 + i * 12;
+    if (mine) {
+      R(x + 12, ry - 9, w - 24, 11, mixHex(GOLD, PAPER, 0.8));
+      R(x + 12, ry - 9, 2, 11, GOLD);
+    }
+    const med = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
+    TXT(med, cR, ry, rank <= 3 ? 10 : 8, rank <= 3 ? GOLD : INK, "left", 0.6);
+    SPT(skinIdle(r.k), cN - 27, ry - 10, 0, 0, null, 0.44);
+    TXT(r.n, cN, ry, 8.5, mine ? INK : INK, "left", 0.6);
+    if (mine) TXT("← YOU", x + w - 14 - TW(fmtM(r.m) + "m", 8.5, 0.4) - 6, ry, 6, GOLD, "right", 0.4);
+    TXT(fmtM(r.m) + "m", cM, ry, 8.5, INK, "right", 0.4);
+  };
+  if (!LBS.rows.length) {
+    const why = LBS.status === "OFFLINE"
+      ? "COULD NOT REACH THE SERVER"
+      : LBS.status === "CONNECTING" ? "ASKING THE SERVER…" : "NO RUNS FILED YET";
+    TXT(why, x + w / 2, by + 92, 9, SOFT, "center", 1.2);
+    TXT(lbOn() ? "PRESS REFRESH TO TRY AGAIN" : "NO LEADERBOARD ENDPOINT IS CONFIGURED",
+        x + w / 2, by + 106, 6.5, FAINT, "center", 0.6);
+  } else {
+    for (let i = 0; i < 7 && i < LBS.rows.length; i++) row(i, LBS.rows[i], false, i + 1);
+  }
+  /* Your own line is PINNED to the bottom, not scrolled into view: on a board
+     of fifty thousand players, "where am I" is the only row that has to be
+     reachable without a scrollbar, and it is pinned whether you are 3rd or 40,000th. */
+  const you = save.name
+    ? (LBS.rows.find(r => r.n === save.name) || { n: save.name, k: save.skin, m: Math.max(save.bestM, LBS.sent) })
+    : null;
+  if (you) row(7, you, true, LBS.rank || 0);
+  else {
+    const ry = by + 55 + 7 * 12;
+    R(x + 12, ry - 9, w - 24, 11, mixHex(INK, PAPER, 0.93));
+    TXT("NO TAG SET — SET ONE TO JOIN THE BOARD", x + w / 2, ry, 7, FAINT, "center", 0.6);
+  }
+  button(x + 14, by + 140, 154, 16, "boardrefresh", LBS.busy ? "⟳  FETCHING…" : "🔄  REFRESH", 8, true);
+  button(x + 176, by + 140, 154, 16, "boardclose", "CLOSE", 8);
+  const band = by + 160;
+  R(x + 12, band, w - 24, 15, mixHex(GOLD, PAPER, 0.86));
+  R(x + 12, band, 2, 15, GOLD); R(x + w - 14, band, 2, 15, GOLD);
+  TXT("YOUR GLOBAL RANK", x + 20, band + 10.5, 7, "#7a5c10", "left", 0.6);
+  TXT(you ? (LBS.rank ? "#" + LBS.rank : "UNRANKED") + "  ·  " + fmtM(you.m) + "m"
+           : "SET A TAG TO RANK", x + w - 20, band + 10.5, 7.5, "#7a5c10", "right", 0.6);
+}
 function drawReady() {
   /* a proper title card: the logo is framed and the whole menu reads as one
-     object sitting on the horizon rather than as loose text */
-  const w = 250, h = 132, x = (WW - w) / 2, y = 26;
+     object sitting on the horizon rather than as loose text.  It is 150 units
+     tall now, not 132, because the board and your own record are on it — and
+     it moved UP to y=18 to pay for them, because the line under the card was
+     already the only thing in the space left below. */
+  const w = 250, h = 150, x = (WW - w) / 2, y = 18;
   panel(x, y, w, h);
   ticks(x, y, w, h, GOLD);
-  TXT("OFFLINE MODE", x + w / 2, y + 18, 7, SOFT, "center", 2.6);
+  /* ---- who is playing, across the very top of the menu ----
+     The Google GamerTag and Gamer Icon when the Play Games bridge answered, and
+     the local nickname or "Dino_Player" when it did not — same line, same
+     place, no second layout, so a browser player never sees a gap where an
+     account would have been. */
+  drawGamerIcon(x + 8, y + 7, 14);
+  TXT("🎮  " + gamerTag(), x + 26, y + 18, 8, PGS.on ? INK : SOFT, "left", 0.4);
+  TXT(PGS.on ? "PLAY CLOUD ON" : "OFFLINE MODE", x + w - 8, y + 18, 6.5,
+      PGS.on ? GOLD : SOFT, "right", 1.8);
   TXT("PIXEL DINO", x + w / 2, y + 50, 27, INK, "center", 2.6);
   R(x + 30, y + 58, w - 60, 1, mixHex(INK, PAPER, 0.82));
   TXT("P A R K O U R   R U N", x + w / 2, y + 72, 9, GOLD, "center", 1.8);
@@ -2488,20 +3593,34 @@ function drawReady() {
   button(x + 16, y + 92, 92, 18, "startbtn", checkpointAt() ? "▶  RESUME" : "▶  START", 9, true);
   button(x + 116, y + 92, 56, 18, "shop", "SHOP", 8);
   button(x + 178, y + 92, 56, 18, "proui", "GO PRO", 8, save.pro);
+  /* The board is the one gold key on the title card: it is the only button
+     here that is about other people.  The tag sits beside it because they are
+     the same feature — you set a name, and the name is what the board files. */
+  button(x + 16, y + 114, 132, 16, "board", "🏆  GLOBAL LEADERBOARD", 7.5, true, GOLD);
+  button(x + 154, y + 114, 80, 16, "nameedit", "👤  " + (save.name || "SET TAG"), 7.5);
+  /* your record, with the name it is filed under and the skin you were wearing */
+  if (save.name || save.bestM > 0) {
+    TXT("👤 " + (save.name || "NO TAG") + (save.bestM > 0 ? "  ·  " + fmtM(save.bestM) + "m BEST" : ""),
+        x + 10, y + 142, 7, save.name ? INK : FAINT, "left", 0.4);
+    SPT(skinIdle(save.skin), x + w - 26, y + 133, 0, 0, null, 0.26);
+  }
 
   if (checkpointAt()) {
-    TXT("CHECKPOINT " + fmtM(checkpointAt()) + "m BANKED", WW / 2, 176, 8, GOLD, "center", 1.4);
-    button(122, 184, 68, 17, "startbtn", "RESUME", 8.5, true);
-    button(194, 184, 68, 17, "newrun", "NEW RUN", 8.5);
+    TXT("CHECKPOINT " + fmtM(checkpointAt()) + "m BANKED", WW / 2, 180, 8, GOLD, "center", 1.4);
+    button(122, 188, 68, 16, "startbtn", "RESUME", 8.5, true);
+    button(194, 188, 68, 16, "newrun", "NEW RUN", 8.5);
   } else if (((G.blink / 30) | 0) % 2 === 0) {
-    TXT(touchUI ? "TAP ANYWHERE TO START" : "PRESS SPACE TO START", WW / 2, 180, 11, INK, "center", 1.4);
+    TXT(touchUI ? "TAP ANYWHERE TO START" : "PRESS SPACE TO START", WW / 2, 182, 10, INK, "center", 1.4);
   }
   TXT(touchUI ? "JUMP · BACKFLIP · SLIDE/GRIND · PARRY/ROCKET · SLOW · DOUBLE-TAP = HOVERBOARD"
               : "SPACE JUMP · ↓ SLIDE · F PARRY · SHIFT SLOW · H HOVERBOARD · P PAUSE", WW / 2, 210, 7, FAINT, "center", 1);
 }
 function drawOver() {
   if (G.t < G.restartAt) return;
-  const w = 250, h = 172, x = (WW - w) / 2, y = 14;
+  /* 196 units tall, not 172: the board and your tag needed a row each, and the
+     reconnect hint moved INSIDE the card rather than below it, because below
+     the card was where the space stopped. */
+  const w = 250, h = 196, x = (WW - w) / 2, y = 8;
   panel(x, y, w, h);
   ticks(x, y, w, h, RED);
   /* an authentic Chrome dialog: a blue title bar over the restored page */
@@ -2518,19 +3637,28 @@ function drawOver() {
       x + 14, y + 84, 7.5, INK, "left", 0.6);
   TXT(fmtM(G.meters) + "m of 100,000m  ·  " + G.bosses.filter(Boolean).length + "/5 bosses",
       x + 14, y + 94, 6.5, FAINT, "left");
+  /* the record line: the tag the score is filed under, and the skin it was set
+     wearing, printed straight above the board key that files it */
+  TXT("👤 " + (save.name || "NO TAG — SET ONE TO RANK") + (G.newBest ? "  ·  NEW BEST" : ""),
+      x + 14, y + 104, 7, save.name ? INK : FAINT, "left", 0.4);
+  SPT(skinIdle(save.skin), x + w - 24, y + 96, 0, 0, null, 0.26);
   const cp = checkpointAt();
-  if (cp) TXT("CHECKPOINT " + fmtM(cp) + "m KEPT", x + 14, y + 106, 6.5, GOLD, "left", 0.6);
+  if (cp) TXT("CHECKPOINT " + fmtM(cp) + "m KEPT", x + 14, y + 114, 6.5, GOLD, "left", 0.6);
   /* the buttons live inside the card, so it reads as one object you can act on */
   if (cp) {
-    button(x + 12, y + 114, 118, 19, "startbtn", "RESTART / RECONNECT", 7, true);
-    button(x + 136, y + 114, 102, 19, "newrun", "NEW RUN", 8);
+    button(x + 12, y + 122, 118, 18, "startbtn", "RESTART / RECONNECT", 7, true);
+    button(x + 136, y + 122, 102, 18, "newrun", "NEW RUN", 8);
   } else {
-    button(x + 12, y + 114, 226, 19, "startbtn", "RESTART / RECONNECT", 8, true);
+    button(x + 12, y + 122, 226, 18, "startbtn", "RESTART / RECONNECT", 8, true);
   }
-  button(x + 12, y + 138, 108, 18, "shop", "WARDROBE", 8);
-  button(x + 128, y + 138, 110, 18, "proui", "GO PRO", 8, save.pro);
+  /* the board gets a full-width gold key on a crash card for the same reason it
+     gets one on the title card: it is the only thing here about other people */
+  button(x + 12, y + 144, 226, 18, "board", "🏆  GLOBAL LEADERBOARD", 8.5, true, GOLD);
+  button(x + 12, y + 166, 74, 17, "shop", "WARDROBE", 7.5);
+  button(x + 90, y + 166, 72, 17, "proui", "GO PRO", 7.5, save.pro);
+  button(x + 166, y + 166, 72, 17, "nameedit", "👤 TAG", 7.5);
   if (((G.blink / 22) | 0) % 2 === 0)
-    TXT(touchUI ? "TAP TO RECONNECT" : "PRESS SPACE TO RECONNECT", WW / 2, y + h + 12, 9, cp ? GOLD : INK, "center", 1.2);
+    TXT(touchUI ? "TAP TO RECONNECT" : "PRESS SPACE TO RECONNECT", WW / 2, y + h - 8, 8, cp ? GOLD : INK, "center", 1.2);
 }
 /* The Chrome parody dialog: a real title bar over a real body, the same one the
    game-over card uses, so the two cards read as the same operating system. */
@@ -2557,38 +3685,57 @@ function drawWin() {
   const w = 344, h = 213, x = (WW - w) / 2, y = 1;
   const by = chromeDialog(x, y, w, h, "System Restored — You Saved the Web!");
   /* the headline, then the line that sells the joke */
-  TXT("👑 YOU SURVIVED 100,000 METERS!", x + w / 2, by + 16, 11, INK, "center", 1.2);
+  TXT("👑 YOU SURVIVED 100,000 METERS!", x + w / 2, by + 15, 11, INK, "center", 1.2);
   TXT("CERTIFIED LEGEND", x + w / 2, by + 28, 9, GOLD, "center", 2.4);
-  TXT("Extinction Cancelled. Dinosaurs Ruled the Internet.", x + w / 2, by + 40, 7, SOFT, "center", 0.4);
-  /* --- the stats, as two tidy label/value columns --- */
-  const rx = x + 132, colY = by + 56;
-  const stat = (i, k, v, col) => {
-    const ry = colY + i * 11;
-    TXT(k, x + 14, ry, 6.5, SOFT, "left");
-    TXT(v, rx, ry, 7.5, col || INK, "left", 0.3);
+  TXT("Extinction Cancelled. Dinosaurs Ruled the Internet.", x + w / 2, by + 39, 7, SOFT, "center", 0.4);
+  /* --- the stats: two label/value pairs a row, not four stacked rows ------
+     The dialog's lower half now belongs to the overdrive question, and four
+     rows of stats would have pushed the post-credits line off the bottom of a
+     panel that has no room to grow — it is 213 of the 216 world units tall. */
+  const stat = (col, row, k, v, col2) => {
+    const sx = x + 14 + col * 162, ry = by + 50 + row * 9;
+    TXT(k, sx, ry, 6, SOFT, "left");          /* 6px: the longest label is 54 wide */
+    TXT(v, sx + 58, ry, 7.5, col2 || INK, "left", 0.3);
   };
-  stat(0, "TOTAL DISTANCE", "100,000 M", INK);
-  stat(1, "TIME ELAPSED", runClock(), INK);
-  stat(2, "BOSSES DEFEATED", "5 / 5  ROUTER · QUEEN", INK);
-  stat(3, "BONUS REWARD", "+" + fmtM(CFG.WIN_COINS) + " WI-FI COINS", GOLD);
-  /* --- the reward banner --- */
-  const bY = colY + 50;
-  R(x + 12, bY, w - 24, 15, mixHex(GOLD, PAPER, 0.86));
-  R(x + 12, bY, 2, 15, GOLD);
-  R(x + w - 14, bY, 2, 15, GOLD);
-  TXT("👑 EMPEROR T-REX SKIN UNLOCKED AND EQUIPPED", x + w / 2, bY + 10, 7, "#7a5c10", "center", 0.5);
-  /* --- the two actions --- */
-  button(x + 14, bY + 21, 154, 18, "again", "▶  PLAY AGAIN", 8.5, true);
-  button(x + 176, bY + 21, 154, 18, "shop", "🛒  OPEN WARDROBE", 8.5);
+  stat(0, 0, "TOTAL DISTANCE", "100,000 M", INK);
+  stat(1, 0, "TIME ELAPSED", runClock(), INK);
+  stat(0, 1, "BOSSES DEFEATED", "5 / 5  ROUTER · QUEEN", INK);
+  stat(1, 1, "BONUS REWARD", "+" + fmtM(CFG.WIN_COINS) + " WI-FI COINS", GOLD);
+  /* --- the reward, and the question that follows it -----------------------
+     The finale used to end on a two-button dialog: play again, or open the
+     wardrobe.  But a player who has just earned a crown and a cape does not
+     want to pick one of those two — they want to KEEP RUNNING, wearing it.
+     So the dialog now spends its lower half on that question, and the reward
+     line that used to be a banner is folded into the top of the same band,
+     which buys the question its own full-width gold focus without the panel
+     growing a single unit: a panel is 213 of the 216 world units tall, so
+     there is nothing to grow into. */
+  const bY = by + 66;
+  R(x + 12, bY, w - 24, 36, mixHex(GOLD, PAPER, 0.86));
+  R(x + 12, bY, 2, 36, GOLD);
+  R(x + w - 14, bY, 2, 36, GOLD);
+  TXT("👑 EMPEROR T-REX SKIN UNLOCKED AND EQUIPPED", x + w / 2, bY + 9, 6.5, "#7a5c10", "center", 0.5);
+  TXT("Do you want to continue running in Endless Legendary Mode?",
+      x + w / 2, bY + 20, 7.5, INK, "center", 0.3);
+  TXT("🔥 MAX SPEED · 3x WI-FI COINS · RANDOM BOSS GATES 🔥",
+      x + w / 2, bY + 30, 6.5, "#7a5c10", "center", 0.5);
+  /* --- the four actions: the two old ones on top, the choice below ------ */
+  button(x + 14, by + 107, 154, 15, "again", "▶  PLAY AGAIN", 8.5, true);
+  button(x + 176, by + 107, 154, 15, "shop", "🛒  OPEN WARDROBE", 8.5);
+  /* CONTINUE is the only full-width key on the dialog, because it is the one
+     the dialog exists to ask about */
+  button(x + 14, by + 126, w - 28, 18, "over", "🔥  CONTINUE RUNNING (ENDLESS)", 9.5, true);
+  button(x + 95, by + 147, 154, 15, "home", "🏠  MAIN MENU", 8.5);
   /* --- the post-credits line --- */
   TXT("No cacti or pterodactyls were harmed in the making of this run… except the router.",
-      x + w / 2, bY + 54, 6, FAINT, "center");
+      x + w / 2, by + 172, 6, FAINT, "center");
 }
 function drawPro() {
   const w = 344, h = 213, x = (WW - w) / 2, y = 1;
   panel(x, y, w, h);
   TXT("👑 DINO PRO", x + 14, y + 24, 16, GOLD, "left", 2.2);
-  TXT(save.pro ? "ACTIVE" : "VIP PASS", x + w - 14, y + 24, 8, save.pro ? INK : SOFT, "right", 1.4);
+  TXT(save.pro ? "OWNED" : BILLS.on ? "VIP PASS" : "FREE",
+      x + w - 14, y + 24, 8, save.pro ? INK : BILLS.on ? SOFT : GOLD, "right", 1.4);
   R(x + 12, y + 30, w - 24, 1, FAINT);
   heading(x, y + 42, w, "WHAT YOU GET", SOFT);
   /* Eight perks will not fit as two-line rows in a 216-unit-tall world, so they
@@ -2614,11 +3761,23 @@ function drawPro() {
      a phone, where a 0.7-unit world gap is under four device pixels. */
   if (G.proMsgT > 0) TXT(G.proMsg, WW / 2, y + h - 33, 9, INK, "center", 0.8);
   else if (save.pro) TXT("2x COINS · 2 REVIVES · BOARD · MAGNET · OVERCLOCK · 9s GHOST", WW / 2, y + h - 33, 7.5, GOLD, "center");
+  /* Play's payments policy: a price may only be shown by an app that can
+     actually charge.  These two lines are the whole rule — the checkout line is
+     never painted in a browser, and the free line is never painted in an APK
+     that has a live BillingClient behind it. */
+  else if (BILLS.on) TXT("ONE-TIME PURCHASE — UNLOCKS EVERYTHING ABOVE, FOREVER", WW / 2, y + h - 33, 7.5, SOFT, "center");
+  else if (BILLS.store) TXT("PAYMENTS UNAVAILABLE — THE PASS IS STILL YOURS TO RESTORE", WW / 2, y + h - 33, 7.5, RED, "center");
   else TXT("FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY", WW / 2, y + h - 33, 7.5, SOFT, "center");
-  /* the price lives on its own line so the button label always fits its box,
-     and CLOSE keeps its own column instead of being overrun */
-  const cl = 54, gap = 8, bw2 = w - 32 - cl - gap, bcx = x + 16;
-  button(bcx, y + h - 22, bw2, 16, "proon", save.pro ? "DEACTIVATE PRO" : "ACTIVATE PRO", 8, save.pro);
+  /* The price lives on the key that charges you, never anywhere else: a number
+     on its own line looks like a price for the GAME, not for the pass.  The
+     RESTORE key only exists when there is an account to restore into, because a
+     restore button in a browser is a lie about a store that is not there. */
+  const cl = 54, gap = 8, rw = BILLS.on && !save.pro ? 62 : 0;
+  const bw2 = w - 32 - cl - gap - (rw ? rw + gap : 0), bcx = x + 16;
+  button(bcx, y + h - 22, bw2, 16, "proon",
+         save.pro ? "DEACTIVATE PRO" : BILLS.on ? "UNLOCK " + BILLS.price : "ACTIVATE PRO",
+         8, save.pro && !BILLS.on);
+  if (rw) button(bcx + bw2 + gap, y + h - 22, rw, 16, "prorestore", "RESTORE", 7.5);
   button(x + w - 16 - cl, y + h - 22, cl, 16, "proclose", "CLOSE", 8, G.proMsg === "");
 }
 function drawShop() {
@@ -2711,6 +3870,7 @@ function render() {
   /* a full-screen panel owns the screen: fade the touch pad out from under it */
   if (document.body && document.body.classList)
     document.body.classList.toggle("modal", G.state === "pro" || G.state === "shop" ||
+                                   G.state === "board" || G.state === "name" ||
                                    (G.state === "win" && G.winT >= CFG.CIN_MODAL));
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = PAPER; ctx.fillRect(0, 0, CW, CH);
@@ -2734,10 +3894,15 @@ function render() {
   drawHud();
   if (G.state === "ready") drawReady();
   else if (G.state === "over") drawOver();
+  else if (G.state === "name") drawName();
+  else if (G.state === "board") drawBoard();
   else if (G.state === "win") drawWin();
   else if (G.state === "shop") drawShop();
   else if (G.state === "pro") drawPro();
   else if (G.state === "pause") drawPause();
+  /* the Play banner is a system overlay, so it is painted over every state and
+     every panel — the one thing on screen that is not the game talking */
+  drawPlayBanner();
 
   const rkt = document.getElementById("bRocket");
   if (rkt) rkt.classList.toggle("dim", G.state === "run" && (G.ammo === 0 || G.cool > 0));
@@ -2796,10 +3961,33 @@ if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
 }
 
 /* ---------------------------------- boot ---------------------------------- */
-resize();
+/* applyOrientation, not resize: the very first thing the game does is decide
+   whether this device needs turning, before it measures anything */
+applyOrientation();
 refreshSoundChip();
 refreshProChip();
 refreshInstallChip();
+/* First launch of a player who has never set a tag: ask for one, right here,
+   before the title card is even on screen.  It is skippable in three ways
+   (SKIP, Escape, and simply not typing) and the game is completely playable
+   without one — the tag is for the global board, not for the game. */
+if (!save.name) openName("ready");
+/* Silent sign-in.  Fired here and forgotten: it resolves into the title card
+   whether or not it ever answers, it is asked for exactly once, and in a
+   browser — where there is no bridge at all — it costs one function call and
+   the local nickname is used instead.  The cloud save is pulled only if the
+   sign-in actually produced a player, so there is never an empty merge. */
+pgAutoSignIn().then(p => {
+  ACH.on = !!p && !!achBridge();          /* achievements ride on the sign-in */
+  if (!p) return;
+  pgPull();
+  if (ACH.on) achCheck();                 /* a returning player has earned things */
+  if (PGS.err) toast("PLAY GAMES: " + PGS.err);
+}).catch(() => { PGS.on = false; });
+/* Billing is asked on its OWN, never behind the sign-in: the one thing in this
+   game that can take money must not depend on another service having answered
+   first, or a Play Games outage would quietly turn the shop into a no-op. */
+billQuery(true).then(() => { if (ACH.on) achCheck(); }).catch(() => { BILLS.on = false; });
 requestAnimationFrame(frame);
 </script>
 </body>

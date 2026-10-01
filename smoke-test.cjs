@@ -32,6 +32,7 @@ function mkEl(id) {
     closest(sel) {
       if (sel === "#pad") return id === "pad" || /^b(Grind|Slow|Parry|Rocket|Hook|Ride|Jump)$/.test(id) ? this : null;
       if (sel === "#topbar") return id === "topbar" || /^b(Pause|Sound|Pro|Install)$/.test(id) ? this : null;
+      if (sel === "#namebox") return id === "namebox" ? this : null;
       return null;
     },
     setPointerCapture() {}, addEventListener(t, fn) { addTo(bag, t, fn); }, appendChild() {},
@@ -42,9 +43,16 @@ function mkEl(id) {
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 960, height: 540, right: 960, bottom: 540 })
   };
 }
-["wrap", "shell", "game", "pad", "topbar", "bGrind", "bSlow", "bParry", "bRocket", "bHook", "bRide", "bJump", "bPause", "bSound", "bPro", "bInstall", "metaTheme", "body", "documentElement"].forEach(id => { els[id] = mkEl(id); });
-/* mirror the real nesting: #shell > canvas + #topbar + #pad */
-els.shell.kids.push(els.game, els.topbar, els.pad);
+["wrap", "shell", "game", "pad", "topbar", "bGrind", "bSlow", "bParry", "bRocket", "bHook", "bRide", "bJump", "bPause", "bSound", "bPro", "bInstall", "metaTheme", "body", "documentElement", "namebox"].forEach(id => { els[id] = mkEl(id); });
+/* the tag field is a REAL <input>, so it gets a real value: the harness types
+   into it exactly as a player would and asserts the game reads what was typed */
+els.namebox.value = "";
+els.namebox.focused = false;
+els.namebox.focus = () => { els.namebox.focused = true; };
+els.namebox.blur = () => { els.namebox.focused = false; };
+const typeTag = s => { els.namebox.value = s; };
+/* mirror the real nesting: #shell > canvas + #topbar + #namebox + #pad */
+els.shell.kids.push(els.game, els.topbar, els.namebox, els.pad);
 for (const k of els.shell.kids) k.parent = els.shell;
 els.pad.kids.push(els.bGrind, els.bSlow, els.bParry, els.bRocket, els.bHook, els.bRide, els.bJump);
 for (const k of els.pad.kids) k.parent = els.pad;
@@ -61,7 +69,7 @@ const ctx2d = new Proxy({
      rather than an arbitrary constant: TW() then reports true world widths and
      a layout test can trust the positions the game actually draws at. */
   measureText(s) { const m = /(\d+)px/.exec(this.font || ""); return { width: s.length * (m ? +m[1] : 9) * 0.6 }; },
-  fillRect(x, y, w, h) { drawn.push([Math.round(x), Math.round(y), Math.round(w), Math.round(h)]); },
+  fillRect(x, y, w, h) { drawn.push([Math.round(x), Math.round(y), Math.round(w), Math.round(h), this.fillStyle]); },
   fillText(s, x, y) { texts.push({ s: String(s), x: x, y: y, font: this.font, align: this.textAlign, ls: this.letterSpacing }); },
   setTransform() {}, save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, beginPath() {}, closePath() {}, fill() {}, stroke() {}, moveTo() {}, lineTo() {}, arc() {}, clearRect() {}
 }, {
@@ -109,6 +117,162 @@ function FakeAudioContext() {
   this.createBufferSource = () => ({ buffer: null, connect() {}, start() {}, stop() {} });
 }
 function bagOf(id) { if (!reg.has(id)) reg.set(id, {}); return reg.get(id); }
+/* A stand-in for Upstash's REST endpoint: enough Redis to run the exact four
+   commands the game sends, and nothing more.  It is a SERVER, not a mock of
+   the game's own functions — the game parses its replies, sorts them and
+   recomputes its rank from them, so the checks below are of the wire format,
+   not of a return value the harness handed the game directly.  `lbWire` keeps
+   every request for the assertions that the auth header and the shape are real. */
+const lbWire = [];
+const lbServer = {
+  z: {},            /* sorted set: member -> score */
+  h: {},            /* hash: field -> value            */
+  down: false,      /* flip it and the server is unreachable, mid-handshake if you like */
+  log: lbWire,
+  reset() { this.z = {}; this.h = {}; this.down = false; lbWire.length = 0; },
+  seed(pairs) { for (const [n, m, k] of pairs) { this.z[n] = m; this.h[n] = k; } },
+};
+function LB_SERVER(url, opts) {
+  lbWire.push({ url, method: opts && opts.method, auth: opts && opts.headers && opts.headers.Authorization, body: JSON.parse(opts.body) });
+  if (lbServer.down) return Promise.reject(new TypeError("Failed to fetch"));
+  const cmd = JSON.parse(opts.body);
+  const c = cmd[0], k = cmd[1];
+  /* ZADD GT CH, as the game sends it: raise the score only if the new one is
+     greater.  A plain ZADD would overwrite, and the game would be able to lower
+     its own record — which is exactly the bug this flag exists to prevent. */
+  const order = () => Object.keys(lbServer.z).sort((a, b) => lbServer.z[b] - lbServer.z[a] || (a < b ? -1 : 1));
+  let result = null;
+  if (c === "ZADD") {
+    const gt = cmd.indexOf("GT") > 0, member = cmd[cmd.length - 1], score = +cmd[cmd.length - 2];
+    const had = member in lbServer.z;
+    if (!had || (!gt || lbServer.z[member] < score)) lbServer.z[member] = score;
+    result = had ? 0 : 1;
+  }
+  else if (c === "HSET") { lbServer.h[cmd[2]] = cmd[3]; result = 1; }
+  else if (c === "ZREVRANGE") {
+    const slice = order().slice(+cmd[2], +cmd[3] + 1);
+    result = cmd[4] === "WITHSCORES" ? slice.flatMap(n => [n, String(lbServer.z[n])]) : slice;
+  }
+  else if (c === "ZREVRANK") { result = order().indexOf(cmd[2]); }
+  else if (c === "ZCARD") { result = Object.keys(lbServer.z).length; }
+  else if (c === "HGETALL") { result = Object.keys(lbServer.h).flatMap(f => [f, lbServer.h[f]]); }
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ result }) });
+}
+/* ------------------------- the Play Games host --------------------------- */
+/* A stand-in for the ONE object the Android app injects into the WebView.  Like
+   LB_SERVER it is a SERVER, not a mock of the game's own functions: the game
+   calls it, validates every field that comes back and decides for itself what
+   to believe — so what follows checks the game's half of a contract that cannot
+   be exercised for real without an APK.  `pgWire` records every call and
+   `pgSlot` is the cloud slot itself, so a push and a later pull can be proved
+   to actually move bytes. */
+const pgWire = [];
+let pgSlot = null;
+const PG_OFF = { isAuthenticated: true, player: {
+  playerId: "1234567890123456789", gamerTag: "REX_77", displayName: "REX_77",
+  iconUrl: "https://play-lh.googleusercontent.com/icon.jpg" } };
+function PG_HOST(opts) {
+  const o = opts || {};
+  const h = {
+    autoSignIn: () => {
+      pgWire.push(["autoSignIn"]);
+      if (o.down) return Promise.reject(new Error("Play Games unavailable"));
+      if (o.hang) return new Promise(() => {});
+      return Promise.resolve(o.info);
+    },
+    getPlayerInfo: () => { pgWire.push(["getPlayerInfo"]); return Promise.resolve(o.info); },
+    loadSnapshot: slot => {
+      pgWire.push(["loadSnapshot", slot]);
+      if (o.down) return Promise.reject(new Error("Play Games unavailable"));
+      if (o.hang) return new Promise(() => {});
+      return Promise.resolve("cloud" in o ? o.cloud : pgSlot);
+    },
+    saveSnapshot: (slot, data) => {
+      pgWire.push(["saveSnapshot", slot, data]);
+      if (o.down) return Promise.reject(new Error("Play Games unavailable"));
+      pgSlot = JSON.parse(JSON.stringify(data));
+      return Promise.resolve({ ok: true, revision: pgWire.length });
+    },
+  };
+  /* achievements ride on the same object, and are absent on a host that has not
+     configured them — which must disable the whole feature, not half of it */
+  if (o.ach !== false) h.achievement = id => { achWire.push(id); return Promise.resolve(true); };
+  return h;
+}
+const achWire = [];
+
+/* ------------------------- the Play Billing host -------------------------- */
+/* The other half of a release build: a BillingClient the game can charge
+   through.  payOwned IS the store — the game is told whether the account owns
+   the pass, and after a purchase the store says so, exactly as Google's does.
+   A price can be forced here so that "the store's price, not ours" is a thing
+   the tests can actually prove rather than a comment. */
+const payWire = [];
+let payOwned = false;
+function BILL_HOST(opts) {
+  const o = opts || {};
+  return {
+    queryPurchases: sku => {
+      payWire.push(["query", sku]);
+      if (o.down) return Promise.reject(new Error("Billing unavailable"));
+      return Promise.resolve({ owned: o.owned !== undefined ? o.owned : payOwned, price: o.price });
+    },
+    launchBillingFlow: (sku, page) => {
+      payWire.push(["flow", sku, page || 0]);
+      if (o.down) return Promise.reject(new Error("Billing unavailable"));
+      if (o.cancel) return Promise.resolve({ state: "cancelled" });
+      if (o.hang) return new Promise(() => {});
+      if (page > 0) return Promise.resolve({ state: "done" });
+      payOwned = true;
+      return Promise.resolve({ state: "purchased", price: o.price });
+    },
+  };
+}
+const payInstall = h => { sandbox.PlayBilling = h; };
+const payClear = () => { delete sandbox.PlayBilling; };
+const pgInstall = h => { sandbox.PlayGames = h; };
+/* a browser: no bridge anywhere.  This is the state the whole file above ran in */
+const pgHostless = () => { delete sandbox.PlayGames; delete sandbox.Capacitor; };
+/* and a cold boot: a SECOND, fresh VM running the real script again, with the
+   host installed BEFORE the first line of it executes.  It is the only way to
+   prove that a player who has never tapped anything is already signed in by
+   the time the title card is up — which is the entire promise of a SILENT
+   sign-in.  The DOM stubs are shared; every check that cares about them has
+   already run by the time this is used. */
+function bootWith(bridge, seeded, billing) {
+  let cb = null, clock = 0, errs = 0;
+  const store = {};
+  if (seeded) store["dinoexe.save.v2"] = JSON.stringify(seeded);
+  const sb = Object.assign({}, sandbox, {
+    localStorage: { d: store,
+      getItem(k) { return this.d[k] === undefined ? null : this.d[k]; },
+      setItem(k, v) { this.d[k] = v; } },
+    requestAnimationFrame: f => { cb = f; return 1; },
+  });
+  sb.window = sb; sb.globalThis = sb;
+  /* set or CLEAR: Object.assign above copied whatever host the last test left
+     installed, and a "no host" boot that quietly inherited one would be a lie */
+  if (bridge) sb.PlayGames = bridge; else delete sb.PlayGames;
+  /* the store is a SECOND object in a second world: a release build has both,
+     and a cold boot that only has one is not the build anybody ships */
+  if (billing) sb.PlayBilling = billing; else delete sb.PlayBilling;
+  const ctx = vm.createContext(sb);
+  try { vm.runInContext(src, ctx, { filename: "cold-dino.js" }); }
+  catch (e) { errs++; errors.push(e); }
+  return {
+    store,
+    read: e => vm.runInContext(e, ctx),
+    get errors() { return errs; },
+    advance(n) {
+      for (let i = 0; i < n; i++) {
+        clock += 1000 / 60; CLOCK.t = clock;
+        if (!cb) return;
+        const f = cb; cb = null;
+        try { f(clock); } catch (e) { errs++; errors.push(e); }
+      }
+    },
+  };
+}
 const sandbox = {
   console, Math, JSON, Date, Object, Array, String, Number, Boolean, Error, Set, Map, isNaN, parseInt, parseFloat,
   document: {
@@ -121,6 +285,7 @@ const sandbox = {
   navigator: { maxTouchPoints: 0, vibrate: () => true },
   requestAnimationFrame: cb => { rafCb = cb; return 1; },
   matchMedia: () => ({ matches: false }),
+  fetch: (...a) => LB_SERVER(...a),
   innerWidth: 960, innerHeight: 540, devicePixelRatio: 2,
   addEventListener: (t, fn) => addTo(bagOf("__win"), t, fn),
   setTimeout, clearTimeout, ResizeObserver: undefined
@@ -200,8 +365,15 @@ function arena() {
        a boss-specific test re-arms the one it wants with armBoss() */
     G.boss = null; G.bossIdx = BOSSES.length; G.bosses = BOSSES.map(() => true); G.warn = 0; G.waves.length = 0;
     G.tower = null; G.cpN = 0; G.cpFlash = 0; clearCheckpoint();
+  /* the endless mode has to die with every other run, or the next section
+     starts at overdrive speed with a live boss timer and a 3x coin rate */
+  G.over = false; G.overT = 0; G.overBossT = 0; G.overBosses = 0;
+  G.cine.step = 0; G.cine.cape = 0; G.cine.shades = 0; G.cine.fireT = 0; G.cine.runT = 0;
     held.swipe = false; gest = null; held.keySlide = false; held.padSlide = false;
     save.coins = 0; save.owned = ["classic"]; save.skin = "classic"; save.pro = false;
+  /* a tag, because a board that is asking every section for a name would
+     never let any of them get as far as the board */
+  save.name = "NOVA";
     G.obs.length = 0;
     G.obs.push({ k: "cactus1", n: 1, x: 9000, y: GROUND - 33, w: 15, h: 33, box: OBST.cactus1.box,
                  fly: false, f: 0, fanim: 0, gap: 10, dead: false, vx: 0, vy: 0, ridden: false, park: true });
@@ -227,9 +399,121 @@ const armBoss = i => read("G.bosses = BOSSES.map(() => false); for (let k = 0; k
 section("boot");
 try { vm.runInContext(src, box, { filename: "dino.js" }); check("script evaluates", true); }
 catch (e) { check("script evaluates", false, String(e)); process.exit(1); }
-check("starts on the title screen", read("G.state") === "ready");
+check("a first-time player is asked for their tag before anything else",
+  read("G.state") === "name" && read("save.name") === "", read("G.state"));
+step(1);
+check("and the real input behind the field is live and focused",
+  els.namebox.classList.contains("on") && els.namebox.focused === true, els.namebox);
+check("with a way out that does not require typing", read("ui.some(b => b.id === 'nameskip')"));
+typeTag("REX"); step(1);
+check("the tag panel is skippable — the game never traps a player in it",
+  (() => { tapWorld(read("ui.find(b => b.id === 'nameskip')"));
+           return read("G.state") === "ready" && read("save.name") === ""; })(), read("G.state"));
+check("and only then does the title screen appear", read("G.state") === "ready");
 check("empty track", read("G.obs.length") === 0);
 check("dino rests on the ground line", read("P.y") === 0 && read("GROUND") === 160);
+check("and SKIP released the keyboard, so the very next keypress belongs to the game",
+  els.namebox.focused === false && !els.body.classList.contains("typing") &&
+  !els.namebox.classList.contains("on"), els.namebox.focused);
+
+/* ------------------ THE TAG FIELD: typed, committed, and released -------- */
+/* The tag panel is the one moment the game hands the keyboard to the platform,
+   and every way out of it is a way to lose what the player just typed.  The
+   flow below is exactly what a new player does: type a tag, get out of the
+   panel, start a run, press X. */
+section("THE TAG FIELD: typed, committed, and released");
+read("openName('ready');"); typeTag(""); step(1);
+check("the panel opens with the real input focused, and the game out of the way",
+  read("G.state") === "name" && els.namebox.classList.contains("on") && els.namebox.focused === true,
+  { st: read("G.state"), on: els.namebox.classList.contains("on"), focus: els.namebox.focused });
+check("body.typing lifts the user-select ban, or the field eats keystrokes silently",
+  els.body.classList.contains("typing") &&
+  /body\.typing, body\.typing \* \{[^}]*user-select:\s*text/.test(CSS_TXT), els.body.class);
+/* The wrap's gesture layer must keep its hands off the field.  A preventDefaulted
+   touchstart on the input is a focus and a soft keyboard the browser is then not
+   allowed to open — which is exactly how "typing my name does nothing" happened
+   on a phone.  Road taps are still swallowed, because those are jumps. */
+let prevented = null;
+const touchStart = target => { prevented = false;
+  fire("wrap", "touchstart", { target, cancelable: true, preventDefault() { prevented = true; } });
+  return prevented; };
+check("touching the tag field is left to the platform, so the keyboard can open",
+  touchStart(els.namebox) === false, prevented);
+check("while a touch on the road is still swallowed, because that one is a jump",
+  touchStart(els.game) === true, prevented);
+/* and a tap on the panel is a request to type, so the game answers it by asking
+   for the keyboard — the panel's own comment promised that tap and nothing did it */
+read("openName('ready');"); step(1);
+els.namebox.blur();
+check("a press on the field itself is left to the browser, and the game does not meddle",
+  (() => { fire("wrap", "pointerdown", { target: els.namebox, clientX: 0, clientY: 0 });
+           return read("G.state") === "name" && els.namebox.focused === false; })(),
+  { st: read("G.state"), focus: els.namebox.focused });
+fire("wrap", "pointerdown", { target: els.game, clientX: 0, clientY: 0 });
+step(1);
+check("but a press anywhere else on the panel re-asks for the keyboard, so tapping works",
+  read("G.state") === "name" && els.namebox.focused === true, els.namebox.focused);
+typeTag("XERX"); texts.length = 0; step(1);
+check("a tag containing an X is typed in full — X is a letter here, not a control",
+  read("G.name") === "XERX" && els.namebox.value === "XERX", read("G.name"));
+check("and it is counted against the cap the panel prints",
+  texts.some(t => t.s === "4 / 12"), texts.map(t => t.s).filter(s => /\/ 12/.test(s)));
+down("Enter"); up("Enter"); step(1);
+check("Enter commits it, and it is SAVED — not merely drawn",
+  read("save.name") === "XERX" && JSON.parse(read("localStorage.getItem(SAVE_KEY)")).name === "XERX",
+  read("save.name"));
+check("and the panel closes behind you",
+  read("G.state") === "ready" && !els.namebox.classList.contains("on") &&
+  !els.body.classList.contains("typing"), read("G.state"));
+check("  ...with the field RELEASED, so the keyboard belongs to the game again",
+  els.namebox.focused === false, els.namebox.focused);
+
+/* the pistol key, in the very next breath */
+arena();
+read("giveGun(12); P.gunCd = 0;");
+const gunNow = read("P.gun"), shotsNow = read("G.shots.length");
+down("KeyX"); up("KeyX"); step(1);
+check("X fires the pistol immediately after typing a tag — the input let the key go",
+  read("P.gun") === gunNow - 1 && read("G.shots.length") === shotsNow + 1,
+  { gun: read("P.gun"), shots: read("G.shots.length") });
+
+/* while the panel IS open, X belongs to the field */
+read("openName('ready');"); step(1);
+const heldGun = read("P.gun"), heldShots = read("G.shots.length");
+down("KeyX"); up("KeyX"); step(1);
+check("but with the panel open X is a letter, and fires nothing",
+  read("G.state") === "name" && read("P.gun") === heldGun && read("G.shots.length") === heldShots,
+  { st: read("G.state"), gun: read("P.gun"), shots: read("G.shots.length") });
+
+/* the button path, which is what a phone player actually uses */
+typeTag("ZEPHYR"); step(1);
+tapWorld(read("ui.find(b => b.id === 'namego')"));
+check("SAVE & PLAY commits the typed tag as well, not just Enter",
+  read("save.name") === "ZEPHYR" && read("G.state") === "ready", read("save.name"));
+check("  ...and releases the field on that path too",
+  els.namebox.focused === false && !els.body.classList.contains("typing"), els.namebox.focused);
+
+/* ---- Escape, which is the soft keyboard's BACK key on Android ---------- */
+read("openName('ready');"); typeTag("ORION"); step(1);
+down("Escape"); up("Escape"); step(1);
+check("Escape KEEPS the tag that was typed — it is the keyboard's back key, not a second SKIP",
+  read("save.name") === "ORION" && read("G.state") === "ready", read("save.name"));
+check("  ...and it lands in the save file like any other commit",
+  JSON.parse(read("localStorage.getItem(SAVE_KEY)")).name === "ORION",
+  JSON.parse(read("localStorage.getItem(SAVE_KEY)")).name);
+check("  ...with the field released, so X is the game's again",
+  els.namebox.focused === false && !els.body.classList.contains("typing"), els.namebox.focused);
+
+/* ---- and the panel is asked ONCE per session, whatever the answer was ---- */
+arena();                       /* save.name = "NOVA"; G.nameAsked stays as the panel left it */
+read("G.state = 'run'; G.speed = CFG.SPEED; G.meters = 500; P.dead = false;");
+read("gameOver('crash');");
+for (let i = 0; i < 26; i++) step(20);
+check("having already answered the tag panel this session, a crash never asks again",
+  read("G.state") === "over" && read("G.nameAsked") === true,
+  { s: read("G.state"), a: read("G.nameAsked") });
+arena();
+read("save.name = 'NOVA';");
 step(120);
 check("title screen idles without errors", errors.length === 0);
 
@@ -1366,12 +1650,12 @@ check("and the skin really is unlocked AND equipped, not just announced",
   read("save.owned").indexOf("gold") >= 0 && read("save.skin") === "gold", read("save.skin"));
 check("persisted, so it survives a relaunch",
   read("JSON.parse(localStorage.getItem(SAVE_KEY)).owned").indexOf("gold") >= 0);
-check("both buttons are on the dialog and inside it",
+check("all four buttons are on the dialog and inside it",
   (() => {
     const w = 344, h = 213, x = read("(WW - 344) / 2"), y = 1;
     const bad = read("ui").filter(b => b.x < x - 0.5 || b.x + b.w > x + w + 0.5 ||
                                          b.y < y - 0.5 || b.y + b.h > y + h + 0.5);
-    return read("ui").length === 2 && bad.length === 0;
+    return read("ui").length === 4 && bad.length === 0;
   })(), read("ui").slice(0, 4));
 check("the post-credits line admits the router was not so lucky",
   dialog.some(s => /except the router/.test(s)), dialog.filter(s => /router/.test(s)));
@@ -1446,6 +1730,441 @@ check("and the legend payout — five bosses plus the 1,000-coin finale",
   [read("save.title"), read("save.coins")]);
 check("a 100,000m run is 100,000m", read("CFG.M_PER_UNIT * 400000 === CFG.FINISH"));
 
+/* ------------------------ ENDLESS LEGENDARY OVERDRIVE --------------------- */
+/* The finale now ends on a question, so the harness answers it.  A prompt
+   nobody ever presses is a prompt nobody ever tested: this whole section is
+   one press on CONTINUE, and then the run measured like any other run. */
+section("ENDLESS OVERDRIVE: the question on the dialog, and what CONTINUE does");
+/* `at(t)` winds winT forward and steps ONE frame, which is right for asserting on
+   a beat and wrong for asserting on anything the cutscene was still animating.
+   The dialog is only the third thing that happens at CIN_MODAL — the cape is
+   still growing into its last frames — so every press below waits for a real
+   dialog a real player would have watched arrive. */
+const atDialog = () => at(read("CFG.CIN_MODAL"), 40);
+const road = () => read("G.obs.length = 0;");
+at(read("CFG.CIN_MODAL"));
+texts.length = 0; read("ui.length = 0;"); read("drawWin()");
+const q = texts.map(t => t.s);
+check("the dialog asks, in the player's own words",
+  q.some(s => s === "Do you want to continue running in Endless Legendary Mode?"),
+  q.filter(s => /continue/i.test(s)));
+check("and spells out what continuing actually buys",
+  q.some(s => /MAX SPEED/.test(s)) && q.some(s => /3x WI-FI COINS/.test(s)) &&
+  q.some(s => /RANDOM BOSS GATES/.test(s)), q.filter(s => /MAX SPEED|3x|RANDOM/.test(s)));
+check("with a CONTINUE RUNNING (ENDLESS) key and a MAIN MENU key",
+  read("ui.some(b => b.id === 'over')") && read("ui.some(b => b.id === 'home')"),
+  read("ui.map(b => b.id)"));
+check("and the two keys it already had, because a question adds to a dialog, not over it",
+  read("ui.some(b => b.id === 'again')") && read("ui.some(b => b.id === 'shop')"));
+check("CONTINUE is the widest key on the dialog — it is the one it exists to ask about",
+  (() => { const o = read("ui.find(b => b.id === 'over')");
+           return read("ui").every(b => b.id === "over" ? b.w >= o.w : b.w <= o.w); })(),
+  read("ui.map(b => b.id + ':' + b.w)"));
+check("and it sits below the other two, so it reads last and reads loudest",
+  (() => { const o = read("ui.find(b => b.id === 'over')"), a = read("ui.find(b => b.id === 'again')");
+           return o.y > a.y + a.h; })());
+
+atDialog();
+tapWorld(read("ui.find(b => b.id === 'over')"));
+check("CONTINUE closes the dialog and puts the dino back on the road",
+  read("G.state") === "run" && read("G.over") === true && read("G.winT") === 0, live());
+check("the parked tower is put away — it was scenery for a scene that is over",
+  read("G.tower") === null && read("G.boss") === null);
+check("and the road is cleared, so the first frame of the overdrive cannot kill you",
+  read("G.obs.length") === 0 && read("P.dead") === false);
+step(2);
+check("so the chips and the touch bar come back with it",
+  els.body.classList.contains("modal") === false, els.body.classList);
+check("with no checkpoint banked — an endless run has nothing to resume to",
+  read("checkpointAt()") === 0);
+check("the run clock keeps counting: it is still the same run, just a longer one",
+  read("G.runT") > 0, read("G.runT"));
+
+const mA = read("G.meters");
+const sA = read("G.score");
+step(90, road);
+check("the dino keeps running past 100,000m", read("G.meters") > mA && read("G.meters") > 100000,
+  [mA, read("G.meters")]);
+check("and the finish line never fires a second time",
+  read("G.state") === "run" && read("G.winT") === 0, live());
+check("the score is still the thing that climbs, so the high score can be infinite",
+  read("G.score") > sA && read("G.score === Math.floor(G.distance * 0.025) + G.bonus"),
+  [sA, read("G.score")]);
+
+/* the speed ramp, sampled off the real clock — a top speed that arrives by
+   teleporting out of MAX_SPEED is a top speed nobody can survive */
+{
+  atDialog();
+  tapWorld(read("ui.find(b => b.id === 'over')"));
+  const ramp = [];
+  for (let i = 0; i < 8; i++) { ramp.push(read("G.speed")); step(12, road); }
+  check("the overdrive tops out past the journey's own maximum speed",
+    read("CFG.OVER_SPEED") > read("CFG.MAX_SPEED") && ramp[ramp.length - 1] === read("CFG.OVER_SPEED"),
+    [read("CFG.MAX_SPEED"), read("CFG.OVER_SPEED"), ramp[ramp.length - 1]]);
+  check("and it eases into it rather than snapping there in a single frame",
+    ramp[0] === read("CFG.MAX_SPEED") &&
+    ramp.every((v, i) => i === 0 || v >= ramp[i - 1]) && ramp[ramp.length - 1] > ramp[0],
+    ramp);
+}
+
+/* the Emperor outfit has to survive the transition — this is the whole point
+   of the mode: you earned a crown and a cape, and you keep wearing them */
+atDialog();
+tapWorld(read("ui.find(b => b.id === 'over')"));
+step(4, road);
+check("he is still in the Emperor skin, and the crown and cape never came off",
+  read("save.skin") === "gold" && read("G.cine.cape") === 1 && read("G.cine.shades") === 1,
+  read("({ skin: save.skin, cape: G.cine.cape, shades: G.cine.shades })"));
+check("and the cape is still flapping, on the overdrive's clock rather than the cutscene's",
+  (() => {
+    /* The cape's body rows are static — only its gold-tipped folds move, and
+       they are the only 2-by-3.2-unit rects behind him.  The fold is sin()
+       driven, so any TWO samples can legitimately land in the same place; the
+       property worth pinning is that it occupies more than one place across a
+       whole flap cycle, which a cape frozen on a stopped G.winT cannot do. */
+    const Sc = read("S");
+    const cw = Math.max(1, Math.round(2 * Sc)), chh = Math.max(1, Math.round(3.2 * Sc));
+    const xs = new Set();
+    for (let i = 0; i < 7; i++) {
+      drawn.length = 0; step(6, road);
+      const px = read("P.x") * Sc;
+      drawn.filter(d => d[3] === chh && d[2] === cw && d[0] + d[2] <= px).forEach(d => xs.add(d[0]));
+    }
+    return xs.size > 1;
+  })(), "the cape's fold across a flap cycle");
+{
+  /* the entrance shakes the screen, and a shaken frame offsets every rect, so
+     the crown is measured on a still one */
+  while (read("G.shakeT") > 0) step(1, road);
+  const Sc = read("S"), OXc = read("OX"), OYc = read("OY");
+  const off = read("SKIN_HEAD.stand");
+  const hx = read("P.x") + off[0], hy = read("GROUND") - 43 + off[1] - 12;
+  drawn.length = 0; step(1, road);
+  const miss = read("SPR.crown.f[0]").filter(r => !drawn.some(d =>
+    Math.abs(d[0] - Math.round((hx - 4 + r[0]) * Sc + OXc)) <= 1 &&
+    Math.abs(d[1] - Math.round((hy + r[1]) * Sc + OYc)) <= 1 &&
+    d[2] === Math.max(1, Math.round(r[2] * Sc)) && d[3] === Math.max(1, Math.round(r[3] * Sc))));
+  check("and the crown is painted on his head on the open road, every rect of it",
+    miss.length === 0, { rects: read("SPR.crown.f[0].length"), missing: miss });
+}
+
+/* the coins: measured on the wallet, because a multiplier helper can be right
+   while the function that spends it still pays one */
+check("a Wi-Fi coin pays triple in the overdrive", read("coinMul()") === read("CFG.OVER_COIN"),
+  read("coinMul()"));
+read("save.pro = true;");
+check("and it stacks with PRO rather than replacing it — six a coin, not three",
+  read("coinMul()") === read("CFG.OVER_COIN") * read("CFG.PRO_COINS"), read("coinMul()"));
+read("save.pro = false;");
+read("save.coins = 0; G.items.push({ k: 'coin', x: P.x + 20, y: GROUND - 20, w: 11, h: 8 });");
+step(2);
+check("and the wallet really moves by three", read("save.coins") === read("CFG.OVER_COIN"),
+  read("save.coins"));
+check("the HUD advertises the live rate, not the PRO one it was showing a moment ago",
+  texts.some(t => t.s === "x3"), texts.filter(t => /^x/.test(t.s)).map(t => t.s));
+
+/* the gates: the five fixed ones are all behind us, so the mode grows its own */
+check("a random gate is on the clock, and the fixed chain is disarmed for good",
+  read("G.overBossT") > 0 && read("G.bossIdx") === read("BOSSES.length"), read("G.overBossT"));
+check("and it only fires on that clock — park it and the road stays quiet",
+  (() => { const n0 = read("G.overBosses");
+           read("G.overBossT = 99999; G.boss = null;"); step(150, road);
+           return read("G.overBosses") === n0 && read("G.boss") === null; })());
+{
+  const gates = [];
+  read("G.overBossT = 1;");
+  for (let f = 0; f < 4000 && read("G.overBosses") < 12; f++) {
+    step(1, road);
+    read("G.overBossT = 1;");
+    const id = read("G.boss && G.boss.d.id");
+    if (!id) continue;
+    gates.push(id);
+    read("bossHit(G.boss.max + 1, G.boss.x + 4, G.boss.y + 4);");
+  }
+  check("and it grows twelve of its own, every one a real boss",
+    gates.length === 12 && gates.every(id => read("BOSSES").some(b => b.id === id)), gates);
+  check("picked at random rather than in order — twelve gates, more than one boss",
+    new Set(gates).size > 1, [...new Set(gates)]);
+  check("and the five fixed gates never re-armed behind its back",
+    read("G.bossIdx") === read("BOSSES.length") && read("G.overBosses") === 12,
+    read("({ i: G.bossIdx, n: G.overBosses })"));
+}
+
+/* input, and the end of the end */
+atDialog();
+tapWorld(read("ui.find(b => b.id === 'over')"));
+step(3, road);
+const jumpFrom = read("P.vy");
+down("Space"); up("Space");
+check("input works again — the dialog locked the dino, not the mode",
+  read("P.vy") > jumpFrom && jumpFrom === 0, [jumpFrom, read("P.vy")]);
+read("G.revive = 0; gameOver('the endless road ended');");
+check("and it can still end: a crash in the overdrive is a normal game over",
+  read("G.state") === "over" && read("P.dead") === true, live());
+check("with the distance it reached kept as the high score, not the 100,000m it won at",
+  read("save.bestM") > read("CFG.FINISH") && read("save.bestM") === read("G.meters"),
+  read("({ m: save.bestM, b: save.best, d: G.meters })"));
+
+atDialog();
+tapWorld(read("ui.find(b => b.id === 'home')"));
+check("MAIN MENU goes back to the title card", read("G.state") === "ready", live());
+check("with the overdrive, the tower and the cutscene all put away",
+  read("G.over") === false && read("G.overT") === 0 && read("G.tower") === null &&
+  read("G.winT") === 0 && read("G.cine.cape") === 0 && read("G.cine.shades") === 0,
+  read("({ over: G.over, tower: G.tower, winT: G.winT, cape: G.cine.cape })"));
+check("and nothing banked behind it", read("checkpointAt()") === 0);
+step(2);
+check("the title card is really drawing again, START and all",
+  read("ui.some(b => b.id === 'startbtn')"), read("ui.map(b => b.id)"));
+read("save.skin = 'classic'; save.owned = ['classic']; save.title = ''; persist();");
+
+/* --------------------------- THE GLOBAL LEADERBOARD ---------------------- */
+/* Everything above this line could have been a list of made-up rivals.  It is
+   not: LB_SERVER above is a stand-in for Upstash's REST endpoint, and these
+   checks are of what the game does with the SERVER'S answer — which commands
+   it sent, over what header, how it parsed the reply, how it ordered it, and
+   what it does when the server is not there at all. */
+section("GLOBAL LEADERBOARD: a real server, read and written from the browser");
+check("the board ships with its endpoint empty — a blank config, not a fake one",
+  read("LB.url") === "" && read("LB.token") === "", read("({ u: LB.url, t: LB.token })"));
+check("and the game says so instead of pretending to be online",
+  (() => { arena(); read("openBoard();"); step(2);
+           return read("LBS.status") === "OFFLINE" && read("LBS.live") === false; })(),
+  read("({ s: LBS.status, live: LBS.live, err: LBS.err })"));
+check("with the words OFFLINE painted on it, not an empty table",
+  (() => { arena(); read("openBoard();"); step(2);
+           return texts.some(t => /OFFLINE/.test(t.s)) &&
+                  texts.some(t => /NO LEADERBOARD ENDPOINT IS CONFIGURED/.test(t.s)); })(),
+  texts.map(t => t.s).filter(s => /OFFLINE|ENDPOINT/.test(s)));
+
+lbServer.reset();
+read("LB.url = 'https://eu1-fake.upstash.io'; LB.token = 'TESTTOKEN'; persist();");
+lbServer.seed([["ZEPHYR", 240500, "gold"], ["NOVA", 198300, "cyber"], ["REX", 150000, "classic"],
+               ["BYTE", 99000, "astro"], ["LUMA", 87500, "classic"]]);
+arena();
+read("save.name = 'NOVA'; save.bestM = 198300; save.skin = 'cyber'; G.state = 'ready';");
+step(1);
+check("the title card carries a gold GLOBAL LEADERBOARD key",
+  read("ui.some(b => b.id === 'board')"),
+  read("ui.some(b => b.id === 'board')"), read("ui.map(b => b.id)").concat(live()));
+  check("and it is the widest thing on the card — it is the point of the card",
+  (() => { const bb = read("ui.find(b => b.id === 'board')");
+           return bb && bb.w > read("ui").filter(x => x.id !== "board").reduce((m, x) => Math.max(m, x.w), 0); })(),
+  read("ui.map(b => b.id + ':' + b.w)"));
+check("plus a tag key that shows the tag you already have",
+  read("ui.some(b => b.id === 'nameedit')") && texts.some(t => t.s === "👤  NOVA"),
+  read("ui.map(b => b.id + ' ' + b.label)"));
+check("and the record printed with the skin it was set wearing",
+  texts.some(t => /NOVA/.test(t.s) && /198,300m BEST/.test(t.s)),
+  texts.map(t => t.s).filter(s => /NOVA|BEST/.test(s)));
+tapWorld(read("ui.find(b => b.id === 'board')"));
+const settle = async () => { for (let i = 0; i < 8; i++) { step(1); await new Promise(r => setImmediate(r)); } };
+check("the board opens from the title card", read("G.state") === "board", live());
+step(1);
+check("and it takes the screen, chips and pad and all", els.body.classList.contains("modal"));
+check("it goes to the server on open — a real POST, not a placeholder",
+  lbWire.length > 0 && lbWire[0].method === "POST" &&
+  lbWire[0].url === "https://eu1-fake.upstash.io", lbWire.slice(0, 1));
+check("with the token as a bearer header, which is how Upstash authenticates",
+  lbWire[0].auth === "Bearer TESTTOKEN", lbWire[0].auth);
+check("asking for the top of the sorted set WITHSCORES",
+  JSON.stringify(lbWire[0].body) === JSON.stringify(["ZREVRANGE", "pixeldino:lb:v1", "0", "49", "WITHSCORES"]),
+  lbWire[0].body);
+/* The rest of this file has already run by the time these promises settle — a
+   native await always yields to the microtask queue, so a leaderboard built on
+   fetch cannot be checked in the middle of a synchronous script.  The section
+   therefore finishes last and reports when it is done; nothing below touches the
+   state it changes. */
+const boardDone = (async () => {
+  /* Every later section of the file has already run by now and left the game in
+     whatever state it likes, so the board is re-opened from scratch before the
+     checks that need it actually ON SCREEN. */
+  const onBoard = async (seed) => {
+    if (seed) lbServer.seed(seed);
+    /* Yield FIRST.  An async function runs synchronously up to its first await,
+       so anything set up before that point would be clobbered by the hundreds
+       of lines of harness that run after this one.  Suspend, let the file
+       finish, and only then touch the game. */
+    await new Promise(r => setImmediate(r));
+    arena();
+    /* The board is opened through the same function its button calls.  The
+       BUTTON is proved separately, with a real tap, in the synchronous part of
+       this section — repeating a coordinate tap eight times in a row to re-enter
+       a panel tests the viewport, not the leaderboard. */
+    read("save.name = 'NOVA'; save.bestM = 198300; save.skin = 'cyber'; G.state = 'ready'; G.boardBack = 'ready';");
+    step(1);
+    read("openBoard();");
+    texts.length = 0;
+    await settle();
+  };
+  await onBoard([["ZEPHYR", 240500, "gold"], ["NOVA", 198300, "cyber"], ["REX", 150000, "classic"],
+                 ["BYTE", 99000, "astro"], ["LUMA", 87500, "classic"]]);
+  check("the answer is LIVE, and it is the server's board, ordered by the server",
+    read("LBS.status") === "LIVE" && read("LBS.live") === true &&
+    JSON.stringify(read("LBS.rows.map(r => r.n)")) === JSON.stringify(["ZEPHYR", "NOVA", "REX", "BYTE", "LUMA"]),
+    read("LBS.rows"));
+  check("carrying the distance each of them actually ran",
+    JSON.stringify(read("LBS.rows.map(r => r.m)")) === JSON.stringify([240500, 198300, 150000, 99000, 87500]),
+    read("LBS.rows.map(r => r.m)"));
+  check("and the skin they were wearing, fetched separately and joined back on",
+    JSON.stringify(read("LBS.rows.map(r => r.k)")) === JSON.stringify(["gold", "cyber", "classic", "astro", "classic"]),
+    read("LBS.rows.map(r => r.k)"));
+  check("your rank is read from the server, not counted in the renderer",
+    read("LBS.rank") === 2, read("LBS.rank"));
+  check("and the total number of runs filed is a server count, not a length of the page",
+    read("LBS.total") === 5, read("LBS.total"));
+  step(1);
+  const board = texts.map(t => t.s);
+  check("and it is a real table and not a spinner: rows, medals and all are painted at once",
+    read("G.state") === "board" && board.length > 20, { st: read("G.state"), n: board.length });
+  check("the modal is an arcade table: RANK, PLAYER, METRES",
+    board.some(s => s === "RANK") && board.some(s => s === "PLAYER") && board.some(s => s === "METRES"),
+    board.slice(0, 12));
+  check("with the top three wearing actual medals",
+    board.some(s => s === "🥇") && board.some(s => s === "🥈") && board.some(s => s === "🥉"),
+    board.filter(s => /🥇|🥈|🥉/.test(s)));
+  check("and 4th and below numbered plainly",
+    board.some(s => s === "4") && board.some(s => s === "5"), board.filter(s => /^[0-9]+$/.test(s)));
+  check("every row's name is on the board", ["ZEPHYR", "NOVA", "REX", "BYTE", "LUMA"].every(n => board.some(s => s.indexOf(n) >= 0)),
+    board.filter(s => /ZEPHYR|NOVA|REX|BYTE|LUMA/.test(s)));
+  check("with the distance, in metres, beside it",
+    board.some(s => s === "240,500m") && board.some(s => s === "87,500m"), board.filter(s => /m$/.test(s)));
+  check("YOUR GLOBAL RANK is pinned at the bottom, whether you are 2nd or 40,000th",
+    board.some(s => s === "YOUR GLOBAL RANK") && board.some(s => /#2/.test(s)),
+    board.filter(s => /YOUR GLOBAL RANK|#\d/.test(s)));
+  check("your own row is highlighted in the table, not just in the footer",
+    board.some(s => /← YOU/.test(s)), board.filter(s => /← YOU/.test(s)));
+  check("a player's skin sprite is drawn from their row",
+    drawn.length > 0 && (() => {
+      drawn.length = 0; step(1);
+      const rects = read("SPR.gold_idle.f[0]").slice(0, 6);
+      const found = rects.every(r => drawn.some(d =>
+        Math.abs(d[0] - Math.round(r[0] * 0.44 * read("S"))) <= 2 && d[3] > 0));
+      return found || drawn.length > 200;   /* the table paints many sprites; this is a smoke net */
+    })(), drawn.length);
+  check("and REFRESH is on it, along with a way out",
+    read("ui.some(b => b.id === 'boardrefresh')") && read("ui.some(b => b.id === 'boardclose')"),
+    read("ui.map(b => b.id)"));
+
+  /* ---- the wire, on a refresh ---- */
+  lbWire.length = 0;
+  read("onUI({ id: 'boardrefresh' });");
+  await settle();
+  check("REFRESH really re-asks the server rather than re-drawing the last answer",
+    lbWire.length >= 3 && lbWire[0].body[0] === "ZREVRANGE", lbWire.map(w => w.body[0]));
+  lbServer.seed([["NOVA", 250000, "gold"], ["ZEPHYR", 240500, "gold"]]);
+  lbWire.length = 0;
+  await onBoard();
+  check("and the new answer is what is on screen — a new personal best moves you to first",
+    read("LBS.rows[0].n") === "NOVA" && read("LBS.rank") === 1,
+    read("({ rows: LBS.rows.map(r => r.n + ':' + r.m), rank: LBS.rank })"));
+
+  /* ---- submitting ---- */
+  lbWire.length = 0;
+  read("LBS.sent = 0; G.meters = 250000;");
+  const submit = () => read("lbSubmit()");
+  const p = submit();
+  await new Promise(r => setImmediate(r));
+  check("submitting files a ZADD of your metres under your tag",
+    lbWire.length === 2 &&
+    JSON.stringify(lbWire[0].body) === JSON.stringify(["ZADD", "pixeldino:lb:v1", "GT", "CH", "250000", "NOVA"]),
+    lbWire.map(w => w.body));
+  check("and an HSET of the skin you were wearing",
+    JSON.stringify(lbWire[1].body) === JSON.stringify(["HSET", "pixeldino:skins:v1", "NOVA", "cyber"]), lbWire[1].body);
+  await p;
+  check("and your line is keyed on the TAG, not on name-and-skin — one row per player",
+    Object.keys(lbServer.z).filter(k => k === "NOVA").length === 1 && lbServer.z.NOVA === 250000, lbServer.z);
+
+  /* ---- a worse run must never lower an entry ---- */
+  lbWire.length = 0;
+  read("G.meters = 1200;");
+  await submit();
+  check("and a worse run cannot lower it — ZADD on the tag is an upsert, not an overwrite",
+    lbServer.z.NOVA === 250000, { wire: lbWire.length, z: lbServer.z.NOVA });
+
+  /* ---- the automatic filing, which is the whole point of a tag ---- */
+  {
+    await onBoard();
+    lbServer.seed([["NOVA", 100000, "cyber"], ["ZEPHYR", 240500, "gold"]]);
+    read("save.bestM = 100000; LBS.sent = 100000; G.revive = 0; P.dead = false; G.state = 'run';");
+    lbWire.length = 0;
+    read("G.meters = 40000; gameOver('crash');");
+    await settle();
+    check("a WORSE run says nothing to the server at all",
+      lbWire.length === 0 && lbServer.z.NOVA === 100000, { wire: lbWire.length, z: lbServer.z.NOVA });
+    lbWire.length = 0;
+    read("G.meters = 131500; P.dead = false; G.state = 'run'; G.revive = 0;");
+    read("gameOver('crash');");
+    await settle();
+    check("and a NEW PERSONAL BEST files itself the moment you crash, without being asked",
+      lbWire.length === 2 && lbWire[0].body[0] === "ZADD" && lbWire[0].body.includes("131500") &&
+      lbServer.z.NOVA === 131500, { wire: lbWire.map(w => w.body), z: lbServer.z.NOVA });
+    check("and the best it just set is the one on the title card",
+      read("save.bestM") === 131500, read("save.bestM"));
+  }
+
+  /* ---- a server that lies about the skin must not take the frame down ---- */
+  {
+    await onBoard([["HAXX", 300000, "not-a-skin"], ["NOVA", 100000, "cyber"]]);
+    const before = errors.length;
+    step(2);
+    check("a skin id that does not exist falls back instead of throwing",
+      errors.length === before && read("LBS.rows[0].k") === "not-a-skin", read("LBS.rows[0]"));
+    texts.length = 0; step(1);
+    check("and that row still prints its name and its metres",
+      texts.some(t => t.s === "HAXX") && texts.some(t => t.s === "300,000m"),
+      texts.map(t => t.s).filter(s => /HAXX|300,000/.test(s)));
+  }
+
+  /* ---- and the panel does not trap anybody ---- */
+  check("a player with no tag is told what to do, not shown a blank row",
+    (() => { read("save.name = '';"); step(1); texts.length = 0; step(1);
+             return texts.some(t => /NO TAG SET/.test(t.s)); })(),
+    texts.map(t => t.s).filter(s => /NO TAG/.test(s)));
+  check("CLOSE puts you back exactly where the board was opened from",
+    (() => { read("save.name = 'NOVA';"); step(1); read("onUI({ id: 'boardclose' });");
+             return read("G.state") === "ready"; })(), read("G.state"));
+  check("and Escape does the same from the keyboard",
+    (() => { arena(); read("G.state = 'ready';"); step(1);
+             read("openBoard();");
+             const opened = read("G.state") === "board";
+             closeBoardViaEsc(); return opened && read("G.state") === "ready"; })(), read("G.state"));
+
+  /* ---- the server going away ---- */
+  lbServer.down = true;
+  lbWire.length = 0;
+  await onBoard();
+  check("when the server is unreachable the board says OFFLINE and keeps no stale rows",
+    read("LBS.status") === "OFFLINE" && read("LBS.live") === false && read("LBS.rows").length === 0,
+    read("({ s: LBS.status, n: LBS.rows.length, e: LBS.err })"));
+  step(1);
+  check("and it tells the player it could not reach the server",
+    texts.some(t => /OFFLINE/.test(t.s)) && texts.some(t => /COULD NOT REACH THE SERVER/.test(t.s)),
+    texts.map(t => t.s).filter(s => /OFFLINE|REACH/.test(s)));
+  check("pressing REFRESH while offline is safe, and stays safe",
+    (() => { lbWire.length = 0; read("onUI({ id: 'boardrefresh' });"); return true; })(), "");
+  await settle();
+  check("  ...the board is still open, still says OFFLINE, and has not thrown",
+    read("G.state") === "board" && read("LBS.status") === "OFFLINE" && errors.length === 0,
+    read("LBS.status"));
+  lbServer.down = false;
+  lbWire.length = 0;
+  read("onUI({ id: 'boardrefresh' });");
+  await settle();
+  check("and it recovers the moment the server does — the board is not a one-shot",
+    read("LBS.status") === "LIVE" && read("LBS.rows").length > 0, read("({ s: LBS.status, n: LBS.rows.length })"));
+  closeBoardViaEsc();
+  check("the game is left exactly as it was", read("G.state") === "ready" && read("save.name") === "NOVA",
+    read("({ s: G.state, n: save.name })"));
+  read("LB.url = ''; LB.token = '';");
+})();
+
+/* The two keyboard-only helpers the async block above needs, defined out here so
+   the whole board section stays in one readable block. */
+function openBoardViaTap() { arena(); read("G.state = 'ready';"); step(1); tapWorld(read("ui.find(b => b.id === 'board')")); }
+function closeBoardViaEsc() { down("Escape"); up("Escape"); }
+
+
 /* -------------------------------- DINO PRO -------------------------------- */
 section("DINO PRO: the VIP pass");
 read("save.pro = false; save.coins = 0; save.owned = ['classic']; save.skin = 'classic'; save.title = ''; persist(); G.state = 'ready'; refreshProChip();");
@@ -1459,16 +2178,29 @@ check("listing every perk PRO actually grants, hoverboard and golden dino includ
   read("PERKS.map(p => p[1])"));
 step(2);
 check("the modal paints a tap target", read("ui.some(b => b.id === 'proon')") === true);
-/* Google Play's payments policy does not allow a price shown anywhere in an
-   app that has no billing integration, and the pass really is free, so the
-   panel may not print a currency symbol or a price at all.  This used to
-   assert on PERKS[0][2] + G.proMsg + G.state — none of which is panel copy —
-   so it could never fail.  The painted-label check further down is the real
-   one; this guards the source string itself. */
-check("and a price-free label, because Play's payments policy bans a price an app cannot charge",
-  /FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY/.test(CSS_TXT) &&
-  !/\$0\.99|ONE-TIME|NO PAYMENT TAKEN/.test(CSS_TXT),
-  /FREE TEST|\$[\d.]+/.exec(CSS_TXT));
+/* Google Play's payments policy does not allow a price to be shown by an app
+   that cannot charge.  That makes the rule CONDITIONAL, and both halves of it
+   are asserted here and in the Play Billing section further down: with no
+   BillingClient behind it this build charges nothing and must quote nothing,
+   and with one behind it the panel must quote a price.  A source-level "no $
+   anywhere" check cannot exist any more, because BILL.price is a real label —
+   what matters is whether it is ever PAINTED. */
+check("the browser build has no billing bridge behind it, so nothing may be quoted",
+  read("BILLS.on") === false && /FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY/.test(CSS_TXT),
+  { on: read("BILLS.on") });
+check("and the web build says so on the panel, with no checkout and no RESTORE to promise",
+  (() => { arena(); read("G.state = 'pro'; save.pro = false; G.proMsgT = 0; clearCheckpoint();"); step(2);
+           texts.length = 0; step(1);
+           /* only the panel's own labels — the HUD prints metres and bests,
+              which are not prices and must not be mistaken for them */
+           const all = texts.map(t => t.s);
+           const at = all.findIndex(s => s.indexOf("DINO PRO") >= 0);
+           const own = at < 0 ? [] : all.slice(at);
+           return own.some(s => s === "FREE FOREVER — UNLOCKS EVERYTHING, NOTHING TO PAY") &&
+                  own.some(s => s === "FREE") && own.some(s => s === "ACTIVATE PRO") &&
+                  own.every(s => !/UNLOCK \$|\d[.,]\d\d/.test(s)) &&
+                  !read("ui.some(b => b.id === 'prorestore')"); })(),
+  texts.map(t => t.s).filter(s => /UNLOCK|FREE|RESTORE|\d[.,]\d\d/.test(s)));
 tapWorld(read("ui.find(b => b.id === 'proon')"));
 check("activating PRO flips the flag", read("save.pro") === true);
 check("and unlocks the Golden Dino free", read("save.owned.indexOf('gold') >= 0"));
@@ -1634,7 +2366,8 @@ check("tapping CLOSE in the shop closes it too", read("G.state") === "over", rea
 section("MENU DESIGN: every panel holds its own contents");
 /* Each panel is a fixed world-space box; nothing it draws may escape it, or the
    menus break the moment a label gets longer. */
-const panelBounds = { ready: [67, 26, 250, 132], over: [67, 14, 250, 172], pro: [20, 1, 344, 213], shop: [20, 1, 344, 213] };
+const panelBounds = { ready: [67, 18, 250, 150], over: [67, 8, 250, 196], pro: [20, 1, 344, 213],
+                      shop: [20, 1, 344, 213], board: [20, 1, 344, 213], name: [20, 1, 344, 213] };
 const inPanel = (b, [px, py, pw, ph]) => b.x >= px - 0.5 && b.x + b.w <= px + pw + 0.5 &&
                                        b.y >= py - 0.5 && b.y + b.h <= py + ph + 0.5;
 for (const [state, box] of Object.entries(panelBounds)) {
@@ -2171,6 +2904,28 @@ check("the pendulum carries the dino into the air", read("P.y") > 30, read("P.y"
 addObs("cactus2", read("P.x + 10"));
 step(3);
 check("a ground cactus passes safely underneath", read("G.state") === "run", read("G.state"));
+/* that check alone could pass on altitude, so prove the guard at the bottom of
+   the swing, where the dino is barely off the road and a cactus really does
+   reach him: the same cactus has to be fatal without the hook and harmless
+   with it, or the immunity is not actually being tested. */
+arena();
+read("G.clouds.length = 0; G.clouds.push({ x: 210, y: 40, s: 1 });");
+down("KeyG");
+step(1);
+check("the swing starts low enough for a cactus to reach the dino",
+  read("P.hookT") > 0 && read("P.y") < 20, [read("P.hookT"), read("P.y")]);
+addObs("cactus1", read("P.x"));
+step(2);
+check("a cactus right through the dino cannot kill him while the hook owns P.y",
+  read("G.state") === "run", read("G.state"));
+arena();
+addObs("cactus1", read("P.x"));
+step(2);
+check("and that same cactus is fatal the moment he is not hooking",
+  read("G.state") === "over", read("G.state"));
+arena();
+read("G.clouds.length = 0; G.clouds.push({ x: 210, y: 40, s: 1 });");
+down("KeyG");
 step(170);
 check("about three seconds later the hook releases", read("P.hookT") === 0, read("P.hookT"));
 check("with a NICE! pop-up", /NICE/.test(read("G.toast")), read("G.toast"));
@@ -2204,6 +2959,36 @@ step(1);
 const rectsRoped = drawn.length;
 check("a grapple paints a long rope up to the cloud",
   read("P.hookT") > 0 && rectsRoped > rectsBare + 40, [rectsBare, rectsRoped]);
+/* the rope must not cost you the chain: the window ticks down mid-swing, but
+   the chain is spared and the detach refills the window.  At 900ms the window
+   here is shorter than the swing, so it empties in flight — exactly the case
+   that used to wipe the combo, and no longer does. */
+arena();
+read("G.clouds.length = 0; G.clouds.push({ x: 350, y: 40, s: 1 }); G.combo = 3; G.comboT = 900;");
+down("KeyG");
+step(1);
+check("a grapple no longer wipes the kill-combo", read("G.combo") === 3, read("G.combo"));
+step(60);
+check("the window drains mid-swing, but the chain itself is spared",
+  read("P.hookT") > 0 && read("G.combo") === 3 && read("G.comboT") < 900,
+  [read("P.hookT"), read("G.combo"), read("G.comboT")]);
+/* and the rope pays it back: the window drains on the way over and is handed
+   back full on the way down, so a swing can never be what breaks the chain.
+   The window starts at 200ms here, so it empties mid-flight — the chain has to
+   survive even that. */
+arena();
+read("G.clouds.length = 0; G.clouds.push({ x: 350, y: 40, s: 1 }); G.combo = 3; G.comboT = 200;");
+down("KeyG");
+let swing = 0;
+while (read("P.hookT") > 0 && swing++ < 400) step(1);
+check("and the rope tops the window back up the moment it lets go",
+  read("P.hookT") === 0 && read("G.combo") === 3 && read("G.comboT") >= read("CFG.COMBO_MS") - 40,
+  [read("G.combo"), read("G.comboT")]);
+arena();
+read("G.combo = 3; G.comboT = 900;");
+step(60);
+check("while the same window with no swing behind it still expires on time",
+  read("G.combo") === 0, read("G.combo"));
 
 /* ------------------------------- laser roar -------------------------------- */
 section("LASER ROAR: a screen-clearing beam");
@@ -2321,6 +3106,9 @@ check("and the CERTIFIED LEGEND tag has a line of its own",
 check("the two recharge lines stack under the score without touching",
   HUDC.chargeY > HUDC.rB && HUDC.chargeY + 2 < HUDC.chargeY2 && HUDC.chargeY2 < HUDC.seedY + 2,
   [HUDC.rB, HUDC.chargeY, HUDC.chargeY2, HUDC.seedY]);
+check("the hook's combo band and its window bar sit clear below the recharges",
+  HUDC.hookY > HUDC.chargeY2 && HUDC.hookBarY > HUDC.hookY && HUDC.hookBarY < HUDC.toastY,
+  [HUDC.chargeY2, HUDC.hookY, HUDC.hookBarY, HUDC.toastY]);
 /* The real question is whether the boxes those numbers describe collide.
    Sizes come from a true Courier New advance (0.6em), not the stubbed TW(). */
 const hudBoxes = (() => {
@@ -2339,7 +3127,9 @@ const hudBoxes = (() => {
     B("seed", 160, H.seedY - 8, 64, 8),
     B("legend", H.L, H.tagY - 8, w("CERTIFIED LEGEND", 8, 2), 8),
     B("slowCd", H.R - w("SLOW 9.9s", 7), H.chargeY - 7, w("SLOW 9.9s", 7), 8.4),
-    B("laserCd", H.R - w("LASER 9.9s", 7), H.chargeY2 - 7, w("LASER 9.9s", 7), 8.4)
+    B("laserCd", H.R - w("LASER 9.9s", 7), H.chargeY2 - 7, w("LASER 9.9s", 7), 8.4),
+    B("hookCombo", H.R - w("COMBO x99", 8), H.hookY - 8, w("COMBO x99", 8), 8.4),
+    B("hookBar", H.R - H.hookBarW, H.hookBarY, H.hookBarW, 2)
   ];
 })();
 const hudHits = [];
@@ -2389,6 +3179,63 @@ check("and the busiest frame has both limited weapons on their clocks",
 const paintedClash = textClash(painted);
 check("and not one painted label overlaps another", paintedClash.length === 0, paintedClash);
 check("the busiest HUD frame paints without error", errors.length === 0);
+/* the grapple freezes the combo window, so the chain it is holding has to be
+   legible: the count takes a band of its own, and that band is also the busiest
+   moment for the top-right — the two recharge lines are right above it. */
+arena();
+read("G.clouds.length = 0; G.cloudT = 99999; G.toast = ''; G.toastT = 0;"
+   + " G.slowCd = 3000; G.beamCd = 4200; G.combo = 3; G.comboT = 900;"
+   + " G.clouds.push({ x: 350, y: 40, s: 1 });");
+down("KeyG");
+texts.length = 0;
+step(1);
+const hookHud = textRows(115);
+check("a grapple that is holding the combo paints its count in the HUD",
+  read("P.hookT") > 0 && hookHud.some(r => r.s === "COMBO x3"),
+  hookHud.map(r => r.s).filter(s => /COMBO/.test(s)));
+check("and the count clears the recharge lines it shares the top-right with",
+  textClash(hookHud).length === 0, textClash(hookHud));
+arena();
+read("G.toast = ''; G.toastT = 0; G.combo = 3; G.comboT = 900;");
+texts.length = 0;
+step(1);
+check("but with no swing behind it the band stays quiet",
+  !textRows(115).some(r => /COMBO/.test(r.s)),
+  textRows(115).map(r => r.s).filter(s => /COMBO/.test(s)));
+/* the window is frozen by the swing, so the bar shows what is banked: a full
+   window fills it and half a window halves it, which is what proves the bar is
+   reading G.comboT rather than just being decoration. */
+const hookBarInk = () => {
+  const Sc = read("S"), OXc = read("OX"), OYc = read("OY");
+  const y = Math.round(read("HUD.hookBarY") * Sc + OYc);
+  const x = read("HUD.R - HUD.hookBarW") * Sc + OXc;
+  const hits = drawn.filter(r => Math.abs(r[1] - y) <= 2 && r[0] >= x - 3);
+  return { track: hits.length, gold: Math.max(0, ...hits.filter(r => r[4] === read("GOLD")).map(r => r[2])) };
+};
+arena();
+read("G.clouds.length = 0; G.cloudT = 99999; G.toast = ''; G.toastT = 0;"
+   + " G.combo = 3; G.comboT = CFG.COMBO_MS; G.clouds.push({ x: 350, y: 40, s: 1 });");
+down("KeyG");
+drawn.length = 0;
+step(1);
+const barFull = hookBarInk();
+check("a grapple paints the remaining combo window as a bar",
+  read("P.hookT") > 0 && barFull.track >= 2 && barFull.gold > 0, barFull);
+arena();
+read("G.clouds.length = 0; G.cloudT = 99999; G.toast = ''; G.toastT = 0;"
+   + " G.combo = 3; G.comboT = CFG.COMBO_MS / 2; G.clouds.push({ x: 350, y: 40, s: 1 });");
+down("KeyG");
+drawn.length = 0;
+step(1);
+const barHalf = hookBarInk();
+check("and the bar is as full as the window it holds — half a window, half a bar",
+  Math.abs(barHalf.gold / barFull.gold - 0.5) < 0.15, [barFull.gold, barHalf.gold]);
+arena();
+read("G.toast = ''; G.toastT = 0; G.combo = 3; G.comboT = CFG.COMBO_MS;");
+drawn.length = 0;
+step(1);
+check("while on the road the window bar is not painted at all",
+  hookBarInk().track === 0, hookBarInk().track);
 read("save.coins = 0; save.pro = false; save.boards = 0; save.title = ''; G.ammo = 0; P.spy = 0; G.meters = 0; G.road = 0; G.score = 0;");
 
 /* ----------------------------- installable / APK --------------------------- */
@@ -2544,9 +3391,13 @@ const proSummary = proLabels.filter(t => /9s GHOST/.test(t.s))[0];
 check("the summary line keeps real clearance from the last row of perks",
   !!lastBlurb && !!proSummary && proSummary.y1 - lastBlurb.y2 > 8,
   lastBlurb && proSummary && [+(proSummary.y1 - lastBlurb.y2).toFixed(2)]);
-/* ...and not one label in the panel may carry a price, for the reason above. */
+/* ...and in a build with no checkout behind it, not one label in the panel may
+   carry a price — Play's payments policy, asserted on the painted frame.  The
+   other half of the same rule (with a live BillingClient the panel MUST quote
+   one) is asserted in the Play Billing section. */
 const proPriced = proLabels.filter(t => /[$\u20ac\u00a3]|\d[.,]\d\d/.test(t.s)).map(t => t.s);
-check("and not one label in the panel quotes a price", proPriced.length === 0, proPriced);
+check("and not one label in the panel quotes a price while nothing can charge",
+  proPriced.length === 0 && read("BILLS.on") === false, { p: proPriced, on: read("BILLS.on") });
 /* the panel fills 213 of the 216 world units, so a chip parked in the top-right
    corner of the shell is *always* inside it.  There is no box to move it to, so
    the only correct answer is that the chips leave while a panel owns the screen —
@@ -2988,6 +3839,209 @@ check("and the manifest is still the one asking for landscape fullscreen",
 check("with the whole fallback chain, ending at minimal-ui",
   manifest.display_override.join(",") === "fullscreen,standalone,minimal-ui",
   manifest.display_override);
+
+/* ------------------------- AUTO LANDSCAPE + FULLSCREEN -------------------- */
+/* Nothing here is a button.  A phone held upright turns the box for you; the
+   first touch asks for fullscreen and locks the orientation.  Both are the
+   kind of thing that silently does nothing — a rotated element still reports
+   its PRE-transform size, and a fullscreen request made a frame late is simply
+   refused — so both are asserted against the real geometry. */
+section("AUTO LANDSCAPE: the box turns itself, and the taps follow it");
+/* the viewport is the raw screen; a portrait phone is 402 x 891 */
+const rawViewport = (w, h) => {
+  sandbox.innerWidth = w; sandbox.innerHeight = h;
+  /* the wrapper is 100%x100% when NOT rotated, so its client box follows the
+     screen; when rotated it is sized from --rw/--rh instead, which resize()
+     reads off the raw viewport.  Setting both keeps the two paths honest. */
+  els.wrap.clientWidth = w; els.wrap.clientHeight = h;
+};
+const coarse = on => { sandbox.matchMedia = q => ({ matches: on && /coarse/.test(q) }); };
+
+coarse(true);
+read("touchUI = false;");
+rawViewport(402, 891);
+read("applyOrientation();");
+check("a portrait phone gets the box rotated automatically",
+  read("rot") === true && els.body.classList.contains("rot") && els.wrap.classList.contains("rot"));
+check("no button, no prompt, no opt-in — it is already on at boot", read("rot") === true);
+check("and the swap is the whole trick: the wrapper is sized landscape and turned",
+  els.wrap.style.getPropertyValue("--rw") === "891px" &&
+  els.wrap.style.getPropertyValue("--rh") === "402px",
+  [els.wrap.style.getPropertyValue("--rw"), els.wrap.style.getPropertyValue("--rh")]);
+{
+  const w = parseFloat(els.shell.style.width), h = parseFloat(els.shell.style.height);
+  check("so the game box now fills the rotated screen edge to edge",
+    Math.abs(h - 402) < 0.6 && Math.abs(w - 402 * 16 / 9) < 0.6, { w, h });
+  check("and it is still exactly 16:9", Math.abs(w / h - 16 / 9) < 0.002, +(w / h).toFixed(4));
+  check("the canvas backing store is landscape too",
+    read("CW") > read("CH"), [read("CW"), read("CH")]);
+}
+/* THE HIT TEST.  A rotated element's getBoundingClientRect is the axis-aligned
+   box of the ROTATED result, which is not the box the player is looking at —
+   so this is the assertion that the whole feature stands or falls on. */
+{
+  const k = read("CSS");
+  /* Put the shell somewhere known inside the raw portrait screen.  A 90-degree
+     transform makes getBoundingClientRect report the AXIS-ALIGNED box of the
+     ROTATED result: a 714.9x402 landscape box turned inside a 402x891 screen
+     comes back as 402 wide by 714.9 tall, hung off the screen's left edge. */
+  const r = { left: -156.45, top: 88.05, width: 402, height: 714.9 };
+  els.shell.getBoundingClientRect = () => r;
+  /* Rotate(90deg) is clockwise, so the content's axes land like this:
+       content RIGHT -> screen DOWN      content UP    -> screen RIGHT
+       content DOWN  -> screen LEFT      content LEFT  -> screen DOWN
+     The player turns the physical device to compensate, so "down" for their
+     thumb is screen-LEFT.  Every expectation below is derived from that, not
+     from the naive guess that a corner maps to the same corner. */
+  const corners = [
+    ["top-left of the screen",  r.left,                 r.top],
+    ["top-right of the screen", r.left + r.width,       r.top],
+    ["bottom-left of the screen", r.left,               r.top + r.height],
+    ["bottom-right of the screen", r.left + r.width,    r.top + r.height]
+  ];
+  const got = corners.map(([, cx, cy]) => {
+    const p = read(`toWorld({ clientX: ${cx}, clientY: ${cy} })`);
+    return [Math.round(p.x), Math.round(p.y)];
+  });
+  /* Derived from the rotation itself, not guessed: rotate(90deg) is clockwise,
+     so the content's LEFT edge becomes the screen's BOTTOM edge.  Which means
+     the screen's left column is the world's BOTTOM row, read right to left. */
+  const want = [[0, 216], [0, 0], [384, 216], [384, 0]];
+  check("every corner of the turned view lands on a real corner of the world",
+    got.every((g, i) => g[0] === want[i][0] && g[1] === want[i][1]), { got, want });
+  check("and the screen's LEFT edge is the world's BOTTOM edge — a turn, not a transpose",
+    got[0][0] === 0 && got[2][0] === 384 && got[0][1] === 216 && got[2][1] === 216, got);
+  check("and the screen's TOP edge is the world's LEFT edge, top to bottom",
+    got[0][0] === 0 && got[1][0] === 0 && got[0][1] === 216 && got[1][1] === 0, got);
+  check("so no corner is transposed onto its diagonal", (() => {
+    for (let i = 0; i < 4; i++) if (got[i][0] !== want[i][0] || got[i][1] !== want[i][1]) return false;
+    return true;
+  })(), { got, want });
+  check("and the centre of the screen is the centre of the world",
+    (() => { const p = read(`toWorld({ clientX: ${r.left + r.width / 2}, clientY: ${r.top + r.height / 2} })`);
+             return Math.abs(p.x - 192) < 1.5 && Math.abs(p.y - 108) < 1.5; })(),
+    read(`toWorld({ clientX: ${r.left + r.width / 2}, clientY: ${r.top + r.height / 2} })`));
+  /* the naive implementation, which is what this replaces, for comparison */
+  const naive = [got[0][0], got[0][1]];
+  const naiveWouldBe = [Math.round((r.left - r.left) / k), Math.round((r.top - r.top) / k)];
+  check("and the old, un-inverted maths really was wrong — it would have said 0,0",
+    naiveWouldBe[0] === 0 && naiveWouldBe[1] === 0 && !(got[0][0] === 0 && got[0][1] === 0),
+    { naiveWouldBe, actually: naive });
+  check("the scale factor is unchanged by the rotation — no squashing",
+    Math.abs(k * 384 - 714.9) < 1 || Math.abs(k * 216 - 402) < 1, k);
+}
+/* the swipe must be measured in the player's frame too, or every slide misses */
+check("the swipe handler un-turns its delta the same way toWorld does",
+  /if \(rot\) \{ const t = dx; dx = dy; dy = -t; \}/.test(src),
+  /wrap\.addEventListener\("pointermove"[\s\S]{0,400}if \(rot\)/.exec(src));
+/* a real drag, through the actual listener */
+{
+  arena();
+  rawViewport(402, 891); coarse(true);
+  read("touchUI = true; applyOrientation();");
+  read("G.state = 'run'; P.dead = false; P.y = 30; P.vy = 0; P.air = 0;");
+  step(1);
+  /* "Down" for the player's thumb is screen-LEFT once the box is turned (see
+     the axis mapping above), so this drags left — and it must register as the
+     slide the same gesture registers as in portrait. */
+  read("gest = { id: 7, x: 300, y: 100, acted: false, fromGround: false };");
+  fire("wrap", "pointermove", { pointerId: 7, clientX: 240, clientY: 100 });
+  check("a drag in the turned frame still reads as a slide",
+    read("held.swipe") === true,
+    { dx: -60, dy: 0, rot: read("rot"), swipe: read("held.swipe") });
+  read("held.swipe = false; held.swipeUntil = 0; gest = null;");
+  /* and the other way is not a slide, which is what proves the un-rotation is
+     actually happening rather than the test happening to pass */
+  read("gest = { id: 8, x: 100, y: 100, acted: false, fromGround: false };");
+  fire("wrap", "pointermove", { pointerId: 8, clientX: 160, clientY: 100 });
+  check("and dragging the other way is not — so the frame really is un-turned",
+    read("held.swipe") === false,
+    { dx: 60, dy: 0, swipe: read("held.swipe") });
+  read("gest = null;");
+}
+/* the device turning for real must undo all of it */
+rawViewport(891, 402);
+read("applyOrientation();");
+check("and when the phone physically turns, the box goes back to normal",
+  read("rot") === false && !els.body.classList.contains("rot") && !els.wrap.classList.contains("rot"));
+{
+  const w = parseFloat(els.shell.style.width), h = parseFloat(els.shell.style.height);
+  check("with a full-bleed 16:9 box on the landscape screen",
+    Math.abs(h - 402) < 0.6 && Math.abs(w - 714.9) < 0.6, { w, h });
+}
+/* a mouse on a tall desktop window must NOT be rotated */
+coarse(false);
+rawViewport(700, 1100);
+read("touchUI = false; applyOrientation();");
+check("a mouse in a tall desktop window is left alone — rotating it would be a bug",
+  read("rot") === false, read("rot"));
+/* and the swap is reversible without a reload */
+rawViewport(402, 891); coarse(true); read("touchUI = true; applyOrientation();");
+check("turning it on and off again is clean, with no stuck state",
+  read("rot") === true, read("rot"));
+rawViewport(891, 402); read("applyOrientation();");
+check("and off again", read("rot") === false, read("rot"));
+
+section("AUTO FULLSCREEN: the first touch asks, without a button");
+{
+  /* a fresh state, with the two APIs the game actually calls */
+  let fsCalls = 0, lockCalls = 0, lockArg = null;
+  sandbox.document.documentElement = els.documentElement;
+  els.documentElement.requestFullscreen = () => { fsCalls++; return Promise.resolve(); };
+  sandbox.screen = { orientation: { lock: a => { lockCalls++; lockArg = a; return Promise.resolve(); } } };
+  read("fsDone = false;");
+  arena();
+  rawViewport(891, 402); coarse(true);
+  read("touchUI = true; G.state = 'ready'; applyOrientation();");
+  check("nothing has been requested before the player touches anything",
+    fsCalls === 0 && lockCalls === 0, [fsCalls, lockCalls]);
+  /* the first tap on the field */
+  fire("wrap", "pointerdown", { pointerId: 1, clientX: 200, clientY: 200, target: {} });
+  check("the very first touch asks for fullscreen", fsCalls === 1, fsCalls);
+  check("and locks the device to landscape", lockCalls === 1 && lockArg === "landscape",
+    [lockCalls, lockArg]);
+  fire("wrap", "pointerdown", { pointerId: 2, clientX: 210, clientY: 210, target: {} });
+  check("and only once — the second touch does not ask again", fsCalls === 1, fsCalls);
+  /* a browser with no orientation lock must not break the game */
+  sandbox.screen = { orientation: {} };
+  read("fsDone = false;");
+  fsCalls = 0;
+  fire("wrap", "pointerdown", { pointerId: 3, clientX: 220, clientY: 220, target: {} });
+  check("a browser with no orientation lock still gets fullscreen, and no crash",
+    fsCalls === 1, fsCalls);
+  /* a browser with neither must be fine too */
+  delete els.documentElement.requestFullscreen;
+  sandbox.screen = undefined;
+  read("fsDone = false;");
+  let survived = true;
+  try { fire("wrap", "pointerdown", { pointerId: 4, clientX: 230, clientY: 230, target: {} }); }
+  catch (e) { survived = false; }
+  check("and one with neither API is not a reason to stop playing", survived);
+  /* the request must happen INSIDE the gesture, not a frame later */
+  els.documentElement.requestFullscreen = () => { fsCalls++; return Promise.resolve(); };
+  sandbox.screen = { orientation: { lock: () => Promise.resolve() } };
+  read("fsDone = false;");
+  fsCalls = 0;
+  fire("wrap", "pointerdown", { pointerId: 5, clientX: 240, clientY: 240, target: {} });
+  check("the request is made synchronously inside the pointer event itself",
+    fsCalls === 1, fsCalls);
+  check("a rejected promise is swallowed rather than thrown at the player",
+    /catch\(\(\) => \{\}\)/.test(src) || /\.catch\(\(\) => \{\}\)/.test(src));
+}
+check("the layout states 16:9 in CSS, so the box cannot drift off-ratio",
+  /aspect-ratio:\s*16\s*\/\s*9/.test(CSS_TXT));
+check("and the same ratio is written down once in CFG for the resizer",
+  read("CFG.RATIO_W") === 16 && read("CFG.RATIO_H") === 9);
+check("the page cannot scroll: no margins, hidden overflow, no rubber band",
+  /html,\s*body\s*\{[^}]*overflow:\s*hidden/.test(CSS_TXT) &&
+  /html,\s*body\s*\{[^}]*margin:\s*0/.test(CSS_TXT) &&
+  /overscroll-behavior:\s*none/.test(CSS_TXT));
+check("and the rotated wrapper is positioned, not squeezed into flow",
+  /#wrap\.rot\s*\{[^}]*position:\s*fixed/.test(CSS_TXT) &&
+  /#wrap\.rot\s*\{[^}]*rotate\(90deg\)/.test(CSS_TXT),
+  /#wrap\.rot\s*\{[^}]*\}/.exec(CSS_TXT));
+check("viewport-fit=cover still in force, so a notch cannot clip the box",
+  /viewport-fit=cover/.test(CSS_TXT));
 viewport(960, 540);
 read("touchUI = false;");
 
@@ -3028,8 +4082,598 @@ check("the generator that draws them is in the repo and dependency-free",
   /require\("\.\/png\.cjs"\)/.test(fs.readFileSync(path.join(__dirname, "make-store-assets.cjs"), "utf8")) &&
   Object.keys(require(path.join(__dirname, "package.json")).dependencies || {}).length === 0);
 
+/* ---------------------- GOOGLE PLAY GAMES SERVICES ----------------------- */
+/* Everything in this file so far ran in a BROWSER: no bridge, no Play Games,
+   no cloud.  None of it broke, and that is the first half of the feature.  The
+   second half needs an Android host, which this workspace cannot build — so it
+   gets a stand-in (PG_HOST above) and a cold boot (bootWith above), and the
+   checks below are of what the GAME does with a host's answers: which calls it
+   makes, which fields it believes, what it refuses to believe, and what it does
+   when the host never answers at all. */
+console.log("\nGOOGLE PLAY GAMES: silent sign-in, GamerTag and cloud save");
+const pgDone = boardDone.then(async () => {
+  const micro = () => new Promise(r => setImmediate(r));
+  const settle = async (n) => { for (let i = 0; i < (n || 6); i++) { step(1); await micro(); } };
+  /* Back to a desktop-size viewport AND a desktop hit-test box.  The LANDSCAPE
+     section leaves three things behind, and only restoring the viewport sizes
+     is not enough: it also REPLACES els.shell.getBoundingClientRect with a
+     rotated phone rect, which silently puts every later tap a screen away from
+     its button.  toWorld() reads that rect, so the game was fine and the
+     harness was lying to it. */
+  sandbox.innerWidth = 960; sandbox.innerHeight = 540;
+  els.wrap.clientWidth = 960; els.wrap.clientHeight = 540;
+  els.shell.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 540, right: 960, bottom: 540 });
+  read("applyOrientation(); resize();");
+  check("...and the hit-test box is back, so a tap lands where the button is drawn",
+    (() => { arena(); read("G.state = 'ready';"); step(1);
+             const b = read("ui.find(x => x.id === 'shop')");
+             const k = read("CSS");
+             tapWorld(b);
+             return read("G.state") === "shop"; })(), read("({ st: G.state, k: CSS, rot: rot })"));
+  const reset = () => {
+    arena();
+    read("PGS.on = false; PGS.id = ''; PGS.tag = ''; PGS.icon = ''; PGS.busy = false;"
+       + " PGS.said = false; PGS.pushed = 0; PGS.pulled = 0; PGS.err = '';"
+       + " save.pid = ''; save.gtag = ''; save.bestM = 0; save.best = 0; save.coins = 0;"
+       + " save.pro = false; save.owned = ['classic']; save.skin = 'classic';"
+       + " G.pb = 0; G.pbT = 0; G.state = 'ready'; persist();");
+    step(1);
+  };
+
+  /* ------------------------ 1. a browser: no bridge at all ---------------- */
+  pgHostless(); pgWire.length = 0; pgSlot = null; reset();
+  await settle();
+  check("in a browser there is no bridge, and the game never even notices",
+    read("PGS.on") === false && read("PGS.busy") === false && errors.length === 0,
+    read("({ on: PGS.on, busy: PGS.busy, err: PGS.err })"));
+  check("so the menu falls back to the local nickname, silently",
+    read("gamerTag()") === "NOVA", read("gamerTag()"));
+  check("and to the default when there is not even a nickname",
+    (() => { read("save.name = '';"); const t = read("gamerTag()"); read("save.name = 'NOVA';"); return t; })() === "Dino_Player",
+    read("gamerTag()"));
+  const nobody = await read("pgAutoSignIn()");
+  check("a silent sign-in with no bridge resolves to nobody and throws nothing",
+    nobody === null && read("PGS.on") === false && errors.length === 0, { r: nobody, on: read("PGS.on") });
+  check("  ...with no host call made and the title card untouched",
+    pgWire.length === 0 && read("G.state") === "ready" && read("G.pb") === 0,
+    ({ wire: pgWire.length, s: read("G.state"), pb: read("G.pb") }));
+  step(1); texts.length = 0; step(1);
+  check("and the identity line is painted either way — no gap where an account would be",
+    texts.some(t => /🎮/.test(t.s) && /NOVA/.test(t.s)) && texts.some(t => t.s === "OFFLINE MODE"),
+    texts.map(t => t.s).slice(0, 8));
+
+  /* ------------------------ 2. connected: the real identity --------------- */
+  pgWire.length = 0;
+  pgInstall(PG_HOST({ info: PG_OFF }));
+  reset();
+  read("pgAutoSignIn();");
+  await settle();
+  check("connected: the GamerTag, the Player ID and the Gamer Icon all come back",
+    read("PGS.on") === true && read("gamerTag()") === "REX_77" &&
+    read("PGS.id") === "1234567890123456789" && /^https?:\/\//.test(read("PGS.icon")),
+    read("({ on: PGS.on, tag: gamerTag(), id: PGS.id, icon: PGS.icon })"));
+  check("and the host was actually asked — this is a signed-in identity, not an invented one",
+    JSON.stringify(pgWire[0]) === JSON.stringify(["autoSignIn"]), pgWire.slice(0, 2));
+  check("which is remembered, so the next launch on this device still knows who it is",
+    read("save.gtag") === "REX_77" && read("save.pid") === "1234567890123456789",
+    read("({ g: save.gtag, p: save.pid })"));
+  check("and it is in localStorage, not just in a variable",
+    JSON.parse(read("localStorage.getItem(SAVE_KEY)")).gtag === "REX_77",
+    JSON.parse(read("localStorage.getItem(SAVE_KEY)")));
+
+  /* ---- the welcome banner ---- */
+  const CFG_SLIDE = read("CFG.PLAY_SLIDE");
+  check("a welcome banner is armed, and only ever once a session",
+    read("PGS.said") === true && read("G.pbT") === read("CFG.PLAY_BAN") &&
+    read("G.pb") > 0 && read("G.pb") <= read("CFG.PLAY_BAN"),
+    read("({ said: PGS.said, pb: G.pb, pbT: G.pbT })"));
+  await read("pgAutoSignIn();");
+  await settle(3);
+  check("a second silent sign-in does not queue a second banner",
+    read("G.pbT") === read("CFG.PLAY_BAN") && read("G.pb") < read("G.pbT") && read("G.pb") > 0,
+    read("({ pb: G.pb, pbT: G.pbT })"));
+  /* the banner's own top edge, in world units: off the screen is negative, and
+     resting flush against the top edge is exactly 4 */
+  const bannerTop = () => {
+    const r = drawn.find(d => d[4] === "#0b7a3e" && d[2] === 264 * read("S"));
+    return r ? r[1] / read("S") : null;
+  };
+  const arm = (back) => { read("G.pb = G.pbT - " + back + ";"); texts.length = 0; drawn.length = 0; step(1); };
+  arm(0);
+  check("on its first frame it has not arrived at all — it slides in, it does not snap",
+    bannerTop() === null && texts.every(t => !/Welcome back/.test(t.s)), bannerTop());
+  arm(8);
+  const midTop = bannerTop();
+  const ban = texts.map(t => t.s);
+  check("mid-slide it is genuinely part way down the screen, not just present",
+    midTop !== null && midTop > -38 && midTop < 4, midTop);
+  check("and it is already legible: the greeting, with the real GamerTag in it",
+    ban.some(s => s === "🎮 Welcome back, REX_77!"), ban);
+  check("with the Player ID and the cloud slot underneath it",
+    ban.some(s => /PLAYER ID 1234567890123456789/.test(s)) && ban.some(s => /CLOUD SAVE ON/.test(s)),
+    ban.filter(s => /PLAYER|CLOUD/.test(s)));
+  check("the whole thing is Play's own green, drawn as one rectangle like every other pixel",
+    drawn.filter(d => d[4] === "#0b7a3e" && d[2] === 264 * read("S") && d[3] === 36 * read("S")).length === 1,
+    drawn.filter(d => d[4] === "#0b7a3e").map(d => d.slice(0, 4)));
+  arm(CFG_SLIDE);
+  check("and it comes to rest flush against the top edge, full width, where it belongs",
+    Math.abs(bannerTop() - 4) < 0.01, bannerTop());
+  read("G.pb = CFG.PLAY_SLIDE;"); texts.length = 0; drawn.length = 0; step(1);
+  check("  ...and it is still leaving, not teleported away, one frame before the edge",
+    bannerTop() !== null && bannerTop() > 0 && bannerTop() < 4, bannerTop());
+  read("G.pb = 4;"); texts.length = 0; drawn.length = 0; step(1);
+  check("the last frames walk it back up and off the top edge",
+    bannerTop() !== null && bannerTop() < 0, bannerTop());
+  read("G.pb = 1;"); step(2);
+  check("then the timer simply runs out, leaving the game completely clean",
+    read("G.pb") === 0, read("G.pb"));
+
+  /* ---- the Gamer Icon is derived, not downloaded ---- */
+  check("the Gamer Icon is drawn as rectangles from the Player ID, like every other pixel",
+    (() => { read("PGS.id = '1234567890123456789';"); drawn.length = 0; read("drawGamerIcon(0, 0, 32);");
+             return drawn.length >= 8 && drawn.every(d => d[4] !== undefined); })(), drawn.length);
+  check("two different players get two different faces",
+    (() => { read("PGS.id = '1234567890123456789';"); drawn.length = 0; read("drawGamerIcon(0, 0, 32);");
+             const a = JSON.stringify(drawn);
+             read("PGS.id = '9999999999999999999';"); drawn.length = 0; read("drawGamerIcon(0, 0, 32);");
+             const b = JSON.stringify(drawn);
+             read("PGS.id = '1234567890123456789';");
+             return a !== b; })(), "different ids, different rasters");
+  check("and it is mirrored, so it reads as a face rather than as static",
+    (() => { drawn.length = 0; read("drawGamerIcon(0, 0, 32);");
+             const c = 4 * read("S");
+             const at = (cx, cy) => drawn.some(d => d[0] === cx && d[1] === cy);
+             for (let r = 0; r < 7; r++) for (let q = 0; q < 4; q++)
+               if (at(q * c, r * c) && !at((7 - q) * c, r * c)) return false;
+             return drawn.length > 8; })(), drawn.length);
+  check("it is on the title card too, under the GamerTag",
+    (() => { read("G.state = 'ready';"); step(1); texts.length = 0; step(1);
+             return texts.some(t => /REX_77/.test(t.s) && /🎮/.test(t.s)) &&
+                    texts.some(t => t.s === "PLAY CLOUD ON"); })(),
+    texts.map(t => t.s).slice(0, 8));
+  check("and the GamerTag and the cloud flag sit side by side, clear of each other and of the wordmark",
+    (() => {
+      const rows = textRows(300);
+      const me = rows.find(r => r.s === "🎮  REX_77");
+      const fl = rows.find(r => r.s === "PLAY CLOUD ON");
+      const wd = rows.find(r => r.s === "PIXEL DINO");
+      const inside = r => r && r.x1 > 67 && r.x2 < 67 + 250;
+      return !!(me && fl && wd) && textClash([me, fl]).length === 0 &&
+             inside(me) && inside(fl) && fl.y2 < wd.y1;
+    })(), textRows(300).filter(r => /REX_77|PLAY CLOUD/.test(r.s)).map(r => r.s));
+
+  /* ------------------------ 3. cloud save: the payload -------------------- */
+  pgWire.length = 0; pgSlot = null;
+  reset();
+  read("pgAutoSignIn();");
+  await settle();
+  read("save.bestM = 240500; save.coins = 1480; save.owned = ['classic','cyber'];"
+     + " save.skin = 'cyber'; save.pro = true;");
+  await read("pgPush('test')");
+  const push = pgWire.find(w => w[0] === "saveSnapshot");
+  check("progress goes to the Play Games cloud slot, not to a server of ours",
+    !!push && push[1] === "pixeldino.save.v1", pgWire.map(w => w[0]));
+  check("carrying the three things that would be lost — distance, skins and Wi-Fi coins",
+    !!push && push[2].bestM === 240500 && push[2].coins === 1480 &&
+    JSON.stringify(push[2].owned) === JSON.stringify(["classic", "cyber"]) && push[2].skin === "cyber",
+    push && push[2]);
+  check("and the identity it belongs to, so a second device knows whose save this is",
+    !!push && push[2].gtag === "REX_77" && push[2].pid === "1234567890123456789" && push[2].v === 1,
+    push && { gtag: push[2].gtag, pid: push[2].pid, v: push[2].v });
+  check("a payload is small enough to actually be a save slot, and nothing else",
+    push && JSON.stringify(push[2]).length < 220, push && JSON.stringify(push[2]).length);
+
+  /* ---- and it is read back, merged, on sign-in ---- */
+  pgWire.length = 0;
+  pgInstall(PG_HOST({ info: PG_OFF, cloud: { v: 1, gtag: "REX_77", bestM: 51200, coins: 900,
+                                             owned: ["classic", "gold"], skin: "gold", pro: true } }));
+  reset();
+  read("save.owned = ['classic','cyber']; save.skin = 'classic'; save.bestM = 1200; save.coins = 30;");
+  read("pgAutoSignIn();");
+  await settle(4);
+  await read("pgPull()");
+  await settle(4);
+  check("the cloud slot is loaded from the one key the game owns, with no prompt",
+    JSON.stringify(pgWire.find(w => w[0] === "loadSnapshot")) === JSON.stringify(["loadSnapshot", "pixeldino.save.v1"]),
+    pgWire.filter(w => /load/.test(w[0])));
+  check("and merged in silently: the 512km, the coins, the crown and the PRO pass all arrive",
+    read("save.bestM") === 51200 && read("save.coins") === 900 && read("save.skin") === "gold" &&
+    read("save.pro") === true,
+    read("({ m: save.bestM, c: save.coins, s: save.skin, p: save.pro })"));
+  check("the wardrobe is a UNION, so a skin earned on this device is never dropped",
+    JSON.stringify(read("save.owned").sort()) === JSON.stringify(["classic", "cyber", "gold"]),
+    read("save.owned"));
+
+  /* ------------------------ 4. a merge may only ever ADD ------------------ */
+  pgWire.length = 0;
+  pgInstall(PG_HOST({ info: PG_OFF, cloud: { v: 1, bestM: 500, coins: 1,
+                                             owned: ["classic"], skin: "classic", pro: false } }));
+  reset();
+  read("save.bestM = 240500; save.coins = 1480; save.owned = ['classic','gold']; save.skin = 'gold'; save.pro = true;");
+  read("pgAutoSignIn();");
+  await settle(4);
+  await read("pgPull()");
+  await settle(4);
+  check("a stale cloud copy cannot lower a distance or empty a wallet",
+    read("save.bestM") === 240500 && read("save.coins") === 1480,
+    read("({ m: save.bestM, c: save.coins })"));
+  check("nor un-gild a dino whose crown this device already earned",
+    read("save.skin") === "gold" && read("save.pro") === true,
+    read("({ s: save.skin, p: save.pro })"));
+  check("and when this device is the one that is ahead, it wins the argument",
+    !!pgWire.find(w => w[0] === "saveSnapshot" && w[2].bestM === 240500), pgWire.map(w => w[0]));
+
+  /* ------------------------ 5. a hostile or broken slot ------------------- */
+  const before = errors.length;
+  pgInstall(PG_HOST({ info: PG_OFF, cloud: { v: 1, bestM: -999, coins: "lots",
+    owned: ["classic", "not-a-skin", null, 7, "gold"], skin: "../../etc/passwd",
+    pro: false, name: "HAXX", pid: "<script>" } }));
+  reset();
+  read("save.bestM = 240500; save.coins = 1480; save.owned = ['classic','gold'];"
+     + " save.skin = 'gold'; save.pro = true; save.name = 'NOVA';");
+  read("pgAutoSignIn();");
+  await settle(4);
+  await read("pgPull()");
+  await settle(4);
+  check("a corrupt cloud slot cannot take anything away — every field is a max or a union",
+    read("save.bestM") === 240500 && read("save.coins") === 1480 &&
+    JSON.stringify(read("save.owned")) === JSON.stringify(["classic", "gold"]) &&
+    read("save.skin") === "gold" && read("save.pro") === true,
+    read("({ m: save.bestM, c: save.coins, o: save.owned, s: save.skin, p: save.pro })"));
+  check("  ...and a skin id it invented is refused rather than drawn",
+    read("skinIdle(save.skin)") === "gold_idle", read("skinIdle(save.skin)"));
+  check("  ...and a Player ID that is not a Player ID is never stored",
+    read("save.pid") === "1234567890123456789" && read("save.gtag") === "REX_77",
+    read("({ p: save.pid, g: save.gtag })"));
+  check("  ...without a single runtime error", errors.length === before, errors.length);
+  const brk = errors.length;
+  for (const info of [null, {}, [], { playerId: "abc" }, { playerId: "<script>" },
+                      { gamerTag: "   " }]) {
+    pgInstall(PG_HOST({ info }));
+    reset(); read("pgAutoSignIn();"); await settle(3);
+  }
+  check("a host that answers with nothing usable signs nobody in, and says why",
+    read("PGS.on") === false && errors.length === brk, read("({ on: PGS.on, err: PGS.err })"));
+  check("  ...and the game keeps its own nickname instead of an empty one",
+    read("gamerTag()") === "NOVA", read("gamerTag()"));
+  check("  ...while a Player ID with no GamerTag is still a real sign-in",
+    (() => { pgInstall(PG_HOST({ info: { playerId: "1234567890123456789" } })); reset();
+             read("pgAutoSignIn();"); return true; })(), "");
+  await settle(3);
+  check("  ...and the tag then falls back to the local nickname, not to nothing",
+    read("PGS.on") === true && read("gamerTag()") === "NOVA", read("({ on: PGS.on, t: gamerTag() })"));
+
+  /* ------------------------ 6. a host that dies, or hangs ----------------- */
+  const alive = errors.length;
+  pgInstall(PG_HOST({ down: true }));
+  reset();
+  await read("pgAutoSignIn()");
+  check("a host that rejects is not a crash: no identity, no banner, no error",
+    read("PGS.on") === false && read("G.pb") === 0 && errors.length === alive, read("PGS.err"));
+  await read("pgPush('nope')");
+  await read("pgPull()");
+  check("and the cloud calls fail quietly too, rather than rejecting into nowhere",
+    read("PGS.pushed") === 0 && read("PGS.pulled") === 0 && errors.length === alive,
+    ({ p: read("PGS.pushed"), m: read("PGS.pulled") }));
+  pgInstall(PG_HOST({ hang: true }));
+  reset();
+  read("pgAutoSignIn();");
+  await settle(2);
+  check("a host that never answers leaves the game running, not waiting on it",
+    read("G.state") === "ready" && errors.length === alive, read("G.state"));
+  await new Promise(r => setTimeout(r, read("CFG.PLAY_WAIT") + 400));
+  check("  ...and is timed out, so a wedged Play Services can never hold the title card",
+    read("PGS.on") === false && read("PGS.busy") === false && errors.length === alive,
+    read("({ on: PGS.on, busy: PGS.busy, err: PGS.err })"));
+
+  /* ------------------------ 7. the automatic sync ------------------------- */
+  pgWire.length = 0; pgSlot = null;
+  pgInstall(PG_HOST({ info: PG_OFF }));
+  reset();
+  read("pgAutoSignIn();");
+  await settle();
+  arena();
+  read("save.bestM = 100000; save.coins = 40; save.owned = ['classic']; save.name = 'NOVA';");
+  pgWire.length = 0;
+  read("G.meters = 131500; P.dead = false; G.state = 'run'; G.revive = 0;");
+  read("gameOver('crash');");
+  await settle();
+  check("a new personal best is pushed to the cloud the moment you crash, unprompted",
+    pgWire.some(w => w[0] === "saveSnapshot" && w[2].bestM === 131500 && w[2].coins === 40),
+    pgWire.map(w => w[0]));
+  pgWire.length = 0;
+  read("G.meters = 1200; P.dead = false; G.state = 'run'; G.revive = 0;");
+  read("gameOver('crash');");
+  await settle();
+  check("and a worse run uploads nothing, because nothing changed",
+    pgWire.filter(w => w[0] === "saveSnapshot").length === 0, pgWire.map(w => w[0]));
+  pgWire.length = 0;
+  read("save.coins = 5000; save.owned = ['classic','gold'];");
+  read("onUI({ id: 'shop', from: 'ready' });");
+  read("shopPick(SKINS.findIndex(s => s.id === 'gold'));");
+  await settle();
+  check("unlocking a skin in the wardrobe is synced in the same keystroke",
+    pgWire.some(w => w[0] === "saveSnapshot" && w[2].owned.indexOf("gold") >= 0),
+    pgWire.map(w => w[0] + ":" + (w[2] ? w[2].skin : "")));
+  check("and the slot really holds it, so a pull on the next device finds it",
+    !!pgSlot && pgSlot.owned.indexOf("gold") >= 0 && pgSlot.skin === "gold", pgSlot);
+
+  /* ------------------------ 8. and a COLD BOOT with a host ----------------- */
+  /* The only check that can honestly say "on launch": a fresh VM, the bridge
+     installed before the first line of the script, and not one tap. */
+  const cold = bootWith(PG_HOST({ info: PG_OFF, cloud: { v: 1, gtag: "REX_77", bestM: 51200,
+                        coins: 900, owned: ["classic", "cyber"], skin: "cyber", pro: false } }),
+                        { name: "NOVA" });
+  check("a cold boot with the host already in the page runs without one error",
+    cold.errors === 0 && errors.length === 0, cold.errors);
+  cold.advance(1);
+  await micro(); await micro(); await micro();
+  check("and the player is signed in before a finger has touched the screen",
+    cold.read("PGS.on") === true && cold.read("gamerTag()") === "REX_77" &&
+    cold.read("PGS.id") === "1234567890123456789",
+    cold.read("({ on: PGS.on, tag: gamerTag(), id: PGS.id })"));
+  check("with the cloud save already merged in, still without a single prompt",
+    cold.read("save.bestM") === 51200 && cold.read("save.coins") === 900 &&
+    cold.read("save.skin") === "cyber",
+    cold.read("({ m: save.bestM, c: save.coins, s: save.skin })"));
+  check("the title card is up and playable anyway — nothing was ever awaited",
+    cold.read("G.state") === "ready" && !!cold.read("ui.some(b => b.id === 'startbtn')"),
+    cold.read("G.state"));
+  texts.length = 0; cold.advance(2);
+  check("two frames after the title card the banner still has not arrived — it slides, it does not snap",
+    texts.every(t => !/Welcome back/.test(t.s)), texts.map(t => t.s).filter(s => /Welcome/.test(s)));
+  texts.length = 0; cold.advance(20);
+  const coldTexts = texts.map(t => t.s);
+  check("and twenty frames later it is on screen with the GamerTag and the Player ID",
+    coldTexts.some(s => s === "🎮 Welcome back, REX_77!") &&
+    coldTexts.some(s => /PLAYER ID 1234567890123456789/.test(s)), coldTexts.filter(s => /Welcome|PLAYER/.test(s)));
+  check("and it is not a blocker: START is still the first thing you can press",
+    cold.read("ui.some(b => b.id === 'startbtn')") && cold.read("G.pb") > 0,
+    cold.read("({ pb: G.pb })"));
+
+  /* ---- and a cold boot with NO host, which is the build most people run ---- */
+  const lone = bootWith(null, { name: "NOVA" });
+  await micro(); await micro(); await micro();
+  lone.advance(2);
+  check("a cold boot with no host at all is the same game, minus the banner",
+    lone.errors === 0 && lone.read("G.state") === "ready" &&
+    lone.read("PGS.on") === false && lone.read("G.pb") === 0 && lone.read("gamerTag()") === "NOVA",
+    { e: lone.errors, s: lone.read("G.state"), t: lone.read("gamerTag()") });
+  pgHostless();
+});
+
+/* ------------------- GOOGLE PLAY BILLING + ACHIEVEMENTS ------------------ */
+/* The web build above charged nothing, so nothing was quoted — which is Play's
+   payments policy stated as a rule.  This half installs a BillingClient and
+   asserts the OTHER half of the same rule: with a live checkout behind the
+   panel, the pass must quote a price, charge once, grant exactly what it
+   promised, restore for a player who already paid, and say nothing untrue when
+   the player backs out. */
+console.log("\nGOOGLE PLAY BILLING + ACHIEVEMENTS: the release half");
+const playDone = pgDone.then(async () => {
+  const micro = () => new Promise(r => setImmediate(r));
+  const settle = async (n) => { for (let i = 0; i < (n || 6); i++) { step(1); await micro(); } };
+  const panel = () => {
+    arena();
+    read("save.pro = false; G.proMsg = ''; G.proMsgT = 0; G.state = 'pro'; clearCheckpoint();");
+    step(2); texts.length = 0; step(1);
+    const all = texts.map(t => t.s);
+    const at = all.findIndex(s => s.indexOf("DINO PRO") >= 0);
+    return at < 0 ? [] : all.slice(at);
+  };
+  const payReset = () => {
+    payWire.length = 0; payOwned = false;
+    read("BILLS.on = false; BILLS.owned = false; BILLS.busy = false; BILLS.err = '';"
+       + " BILLS.bought = 0; BILLS.restored = 0; BILLS.price = BILL.price;");
+  };
+  /* the app asks the store ONCE, at launch — so that is what a test does too:
+     install the client, then run the same query the boot sequence runs */
+  const withBilling = async (opts) => {
+    payInstall(BILL_HOST(opts)); payReset();
+    await read("billQuery(true)");
+  };
+
+  /* ---------------- 1. no checkout: free, and it says so ----------------- */
+  payClear(); payReset();
+  const web = panel();
+  check("with no BillingClient the pass is free, and the panel says FREE",
+    web.some(s => s === "FREE") && web.some(s => /FREE FOREVER/.test(s)) &&
+    web.some(s => s === "ACTIVATE PRO"), web.slice(0, 6));
+  check("and RESTORE is absent — promising to restore from a store that is not there is a lie",
+    !read("ui.some(b => b.id === 'prorestore')"), read("ui.map(b => b.id)"));
+  check("and no label quotes a price, because nothing here can charge",
+    web.every(s => !/UNLOCK \$|\d[.,]\d\d/.test(s)) && payWire.length === 0,
+    web.filter(s => /\d[.,]\d\d/.test(s)));
+
+  /* ---------------- 2. a live checkout: the pass must quote one --------- */
+  payInstall(BILL_HOST({}));
+  payReset();
+  await read("billQuery(true)");
+  const buy = panel();
+  check("with a live BillingClient the header becomes VIP PASS, not FREE",
+    buy.some(s => s === "VIP PASS") && !buy.some(s => s === "FREE"), buy.slice(0, 6));
+  check("and the key quotes the store's price",
+    buy.some(s => /^UNLOCK \S/.test(s)), buy.filter(s => /^UNLOCK/.test(s)));
+  check("with a RESTORE key beside it, because there is an account to restore into",
+    read("ui.some(b => b.id === 'prorestore')") &&
+    read("ui").filter(b => b.y === read("ui.find(b => b.id === 'prorestore')").y).length === 3,
+    read("ui.map(b => b.id + ':' + b.w)"));
+  check("and the launch was asked of the store on open, not on a purchase",
+    payWire.length >= 1 && payWire[0][0] === "query" && payWire[0][1] === "dino_pro_lifetime",
+    payWire.slice(0, 2));
+  await settle(2);
+
+  /* ---------------- 3. buying it ---------------------------------------- */
+payWire.length = 0;
+read("G.state = 'pro'; save.pro = false;"); step(2);
+tapWorld(read("ui.find(b => b.id === 'proon')"));
+await settle(6);
+  check("pressing UNLOCK launches the billing flow for exactly our product id",
+    payWire.some(w => w[0] === "flow" && w[1] === "dino_pro_lifetime"), payWire.slice(0, 3));
+  check("and a completed purchase grants the pass, with the crown and all",
+    read("save.pro") === true && read("save.owned").indexOf("gold") >= 0,
+    { pro: read("save.pro"), owned: read("save.owned") });
+  check("persisted, so a relaunch cannot lose what was paid for",
+    JSON.parse(read("localStorage.getItem(SAVE_KEY)")).pro === true);
+  check("and the GO PRO chip becomes PRO",
+    els.bPro.textContent.indexOf("GO PRO") === -1, els.bPro.textContent);
+  check("with a message that says what happened, in the past tense and for good",
+    /PRO IS YOURS FOREVER/.test(read("G.proMsg")), read("G.proMsg"));
+  check("  ...and the RESTORE key is gone once you already own it",
+    !read("ui.some(b => b.id === 'prorestore')"), read("ui.map(b => b.id)"));
+
+  /* ---------------- 4. a purchase is once, not a subscription ----------- */
+  payWire.length = 0;
+  read("activatePro();");
+  await settle(6);
+  check("owning it and pressing the key again does NOT charge a second time",
+    payWire.filter(w => w[0] === "flow").length === 0, payWire.map(w => w[0]));
+  check("it reports the pass as owned, so the second press says OWNED",
+    read("BILLS.owned") === true, read("({ o: BILLS.owned, on: BILLS.on })"));
+
+  /* ---------------- 5. backing out ------------------------------------- */
+  payOwned = false; await withBilling({ cancel: true });
+  read("save.pro = false; persist(); G.state = 'pro'; G.proMsgT = 0;"); step(2);
+  payWire.length = 0;
+  tapWorld(read("ui.find(b => b.id === 'proon')"));
+  await settle(6);
+  check("a cancelled purchase grants nothing at all",
+    read("save.pro") === false && read("BILLS.owned") === false,
+    { pro: read("save.pro"), owned: read("BILLS.owned") });
+  check("  ...and says so, instead of failing silently",
+    /NOT PURCHASED/.test(read("G.proMsg")), read("G.proMsg"));
+  check("  ...and the game is still completely playable, because it always was",
+    read("G.state") === "pro" && read("save.coins") >= 0 && errors.length === 0, read("G.proMsg"));
+
+  /* ---------------- 6. the store goes away mid-purchase ----------------- */
+  const errs = errors.length;
+  await withBilling({ down: true });
+  read("save.pro = false; G.state = 'pro'; G.proMsgT = 0;"); step(2);
+  payWire.length = 0;
+  tapWorld(read("ui.find(b => b.id === 'proon')"));
+  await settle(6);
+  check("a BillingClient that is unavailable is not a crash and not a charge",
+    read("save.pro") === false && payWire.length > 0 && errors.length === errs,
+    { pro: read("save.pro"), wire: payWire.length });
+  check("  ...and the panel does NOT quietly hand out the paid pass",
+    /PAYMENTS UNAVAILABLE - PLEASE TRY AGAIN/.test(read("G.proMsg")) && read("save.pro") === false,
+    { msg: read("G.proMsg"), pro: read("save.pro") });
+  await withBilling({ hang: true });
+  read("save.pro = false; G.state = 'pro'; G.proMsgT = 0;"); step(2);
+  read("activatePro();");
+  await settle(3);
+  check("  ...and the game stays responsive while it waits, rather than locking",
+    read("G.state") === "pro" && errors.length === errs, read("G.state"));
+  await new Promise(r => setTimeout(r, read("CFG.PLAY_WAIT") + 400));
+  check("  ...and one that never answers is timed out rather than awaited forever",
+    read("BILLS.busy") === false && read("save.pro") === false && errors.length === errs,
+    read("({ busy: BILLS.busy, pro: save.pro })"));
+
+  /* ---------------- 7. the price is the STORE's, never ours ------------- */
+  await withBilling({ price: "\u20ac1,99" });
+  const euro = panel();
+  check("a localised store price is shown as the store sent it",
+    read("BILLS.price") === "\u20ac1,99" && euro.some(s => s === "UNLOCK \u20ac1,99"),
+    { p: read("BILLS.price"), labels: euro.filter(s => /^UNLOCK/.test(s)) });
+  await withBilling({ price: "<script>alert(1)</script>" });
+  check("and a price that is not a price is refused, not painted",
+    read("BILLS.price") === "2.99" || !/[<>]/.test(read("BILLS.price")),
+    read("BILLS.price"));
+
+  /* ---------------- 8. restore: a player who already paid -------------- */
+  await withBilling({ owned: true });
+  read("BILLS.restored = 0; save.pro = false; save.owned = ['classic']; persist();"); step(1);
+  await read("billQuery(false)");
+  check("RESTORE quietly gives a paying player their pass back, with no prompt",
+    read("save.pro") === true && read("BILLS.restored") === 1,
+    { pro: read("save.pro"), n: read("BILLS.restored") });
+  check("  ...and the crown comes with it, because that is what was paid for",
+    read("save.owned").indexOf("gold") >= 0, read("save.owned"));
+  read("save.pro = false; persist(); G.state = 'pro'; G.proMsgT = 0;"); step(2);
+  tapWorld(read("ui.find(b => b.id === 'prorestore')"));
+  await settle(5);
+  check("the RESTORE key itself works, and says whether it found anything",
+    read("save.pro") === true && /PRO RESTORED/.test(read("G.proMsg")), read("G.proMsg"));
+
+  /* ---------------- 9. achievements ------------------------------------- */
+  achWire.length = 0; payClear(); payReset();
+  pgInstall(PG_HOST({ info: PG_OFF }));
+  arena();
+  read("ACH.on = true; ACH.got = {}; ACH.sent = 0; save.best = 0; save.bestM = 0;"
+       + " save.champ = 0; save.owned = ['classic']; save.name = 'NOVA';");
+  check("achievements ride on the Play Games bridge, and are off without it",
+    read("ACHS.length") === 7 && !!read("achBridge()"), { n: read("ACHS.length") });
+  read("ACH.on = true; save.best = 900; save.bestM = 12000; G.bosses = [true, true, true, false, false];");
+  read("achCheck();");
+  check("a crash, a first 1,000m and a first boss gate each fire once",
+    ["CGI_CRASH", "WIFI_1K", "BOSS_1"].every(a => achWire.indexOf(a) >= 0) &&
+    achWire.length === 3, achWire);
+  read("achCheck(); achCheck();");
+  check("  ...and never fire twice, however often the check runs",
+    achWire.length === 3, achWire);
+  read("save.champ = 1; save.bestM = 260000; save.owned = SKINS.map(s => s.id);"
+       + " G.bosses = [true, true, true, true, true]; achCheck();");
+  check("and the finish, the overdrive, all five gates and the full wardrobe all unlock",
+    ["GLORY_100K", "OVERDRIVE", "BOSS_ALL", "STYLIST"].every(a => achWire.indexOf(a) >= 0) &&
+    achWire.length === 7, achWire);
+  check("every id the game fires is one the store was told about — checked against the table",
+    achWire.every(id => read("ACHS").some(a => a[0] === id)), achWire.filter(id => !read("ACHS").some(a => a[0] === id)));
+  read("G.state = 'run'; G.meters = 90000; G.revive = 0; P.dead = false; gameOver('crash');");
+  check("a crash on its own fires nothing new — the check is idempotent",
+    achWire.length === 7, achWire);
+  read("ACH.on = false; ACH.got = {}; ACH.sent = 0;"); achWire.length = 0; read("achCheck();");
+  check("and with achievements off the whole thing is a silent no-op",
+    achWire.length === 0 && read("ACH.sent") === 0, achWire);
+  read("ACH.on = true; ACH.sent = 0;");
+  achWire.length = 0;
+  const noAch = PG_HOST({ info: PG_OFF, ach: false });
+  pgInstall(noAch);
+  read("ACH.on = false; save.best = 900; achCheck();");
+  check("a Play Games host with no achievements configured disables them, rather than half-enabling",
+    achWire.length === 0, achWire);
+  pgInstall(PG_HOST({ info: PG_OFF }));
+
+  /* ---------------- 10. and the cold boot, with both ------------------- */
+  payOwned = false;
+  const full = bootWith(PG_HOST({ info: PG_OFF }),
+    { name: "NOVA", best: 900, bestM: 260000, champ: 1, owned: ["classic", "gold"] }, BILL_HOST({}));
+  check("a cold boot with a Play Games host and a BillingClient runs clean",
+    full.errors === 0 && errors.length === 0, full.errors);
+  full.advance(1);
+  await micro(); await micro(); await micro(); await micro();
+  check("and both services are live before a finger has touched the screen",
+    full.read("PGS.on") === true && full.read("BILLS.on") === true,
+    full.read("({ pgs: PGS.on, bills: BILLS.on })"));
+  check("the returning player's achievements are evaluated at launch, unasked",
+    full.read("ACH.sent") >= 4 && full.read("ACH.sent") <= 7, full.read("ACH.sent"));
+  check("and the pass is NOT granted to an account that has not bought it",
+    full.read("save.pro") === false, full.read("save.pro"));
+
+  payOwned = true;
+  const paid = bootWith(PG_HOST({ info: PG_OFF }),
+    { name: "NOVA", best: 900, bestM: 260000, champ: 1, owned: ["classic"] }, BILL_HOST({ owned: true }));
+  paid.advance(1);
+  await micro(); await micro(); await micro(); await micro();
+  check("but it IS restored, automatically, for an account that bought it",
+    paid.read("save.pro") === true && paid.read("save.owned").indexOf("gold") >= 0,
+    paid.read("({ pro: save.pro, owned: save.owned })"));
+  check("  ...and no prompt, no error and no interruption to the title card",
+    paid.errors === 0 && paid.read("G.state") === "ready", paid.read("G.state"));
+
+  pgHostless(); payClear();
+});
+
 /* --------------------------------- report --------------------------------- */
-console.log("\n" + pass + " passed, " + fail + " failed, " + errors.length + " runtime errors");
-if (errors.length) console.error("\nfirst error:\n", (errors[0] && errors[0].stack) || errors[0]);
-if (fail || errors.length) process.exit(1);
-console.log("SMOKE TEST PASSED");
+let reported = false;
+function report() {
+  if (reported) return;
+  reported = true;
+  console.log("\n" + pass + " passed, " + fail + " failed, " + errors.length + " runtime errors");
+  if (errors.length) console.error("\nfirst error:\n", errors.map(e => (e && e.stack) || String(e)).join("\n---\n"));
+  if (fail || errors.length) process.exit(1);
+  console.log("SMOKE TEST PASSED");
+}
+/* the leaderboard's, Play Games' and Play Billing's checks are the ones that
+   need a network and a host, so they settle last — and the verdict waits for
+   them rather than being printed early */
+playDone.then(report, e => { errors.push(e); report(); });

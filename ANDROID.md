@@ -425,6 +425,247 @@ Point `assets/icon.png` at the 1024px icon this repo generates
 
 ---
 
+## The Play Games bridge
+
+The game ships with **Google Play Games Services silent sign-in and cloud save
+already built in** — and with **no dependency on it at all**. The web build is
+the same game; the APK build is that game plus an identity.
+
+The contract is deliberately tiny: the host injects **one object**, and the game
+calls **three methods on it**. Nothing is awaited, nothing is required, and every
+answer is validated before it is believed.
+
+### What the host must provide
+
+| Member | Type | Returns |
+| --- | --- | --- |
+| `autoSignIn()` | `() => Promise` | `{ playerId, gamerTag, iconUrl }` — or `{ isAuthenticated, player: {...} }` |
+| `loadSnapshot(slot)` | `(String) => Promise` | the object last passed to `saveSnapshot` |
+| `saveSnapshot(slot, data)` | `(String, Object) => Promise` | anything truthy; `null`/reject means "not saved" |
+
+`getPlayerInfo()` is used if the host has it and is **never required**. The game
+also accepts `window.Capacitor.Plugins.PlayGames`, so a Capacitor plugin works
+without the host object being renamed.
+
+Two fields are validated hard, because they are the only values in the game that
+came from somewhere the game does not control: `playerId` must match
+`^[0-9]{4,24}$` and `gamerTag` is trimmed to 12 printable ASCII characters.
+Anything else is discarded and the player is treated as not signed in.
+
+### Kotlin — `addJavascriptInterface`
+
+```kotlin
+class PlayGamesBridge(private val ctx: Context) {
+  private val json = org.json.JSONObject()
+
+  @JavascriptInterface
+  fun autoSignIn(): String {
+    // Play Games v2: signIn() is silent when a Google account is already on the
+    // device and has previously consented. Reject if the player declined.
+    return runCatching {
+      json.put("playerId", "1234567890123456789")
+          .put("gamerTag", "REX_77")
+          .put("iconUrl", "https://play-lh.googleusercontent.com/…")
+          .toString()
+    }.getOrElse { "{}" }
+  }
+
+  @JavascriptInterface fun loadSnapshot(slot: String): String = runCatching {
+    ctx.getSharedPreferences("play", MODE_PRIVATE).getString(slot, "null") ?: "null"
+  }.getOrElse { "null" }
+
+  @JavascriptInterface
+  fun saveSnapshot(slot: String, data: String): String = runCatching {
+    ctx.getSharedPreferences("play", MODE_PRIVATE).edit().putString(slot, data).apply()
+    "{\"ok\":true}"
+  }.getOrElse { "null" }
+}
+```
+
+Register it once, after the WebView exists:
+
+```kotlin
+webView.addJavascriptInterface(PlayGamesBridge(this), "PlayGames")
+```
+
+### JavaScript — a Capacitor plugin
+
+```js
+// android-app/src/.../PlayGames.js  (registered as PlayGamesPlugin)
+import { registerPlugin } from '@capacitor/core';
+export const PlayGames = registerPlugin('PlayGames', {
+  web: () => import('./web').then(m => new m.PlayGamesWeb()),   // the stub below
+});
+```
+
+The web fallback is what makes the browser build honest — it implements nothing,
+so the game takes its documented no-bridge path:
+
+```js
+export class PlayGamesWeb {
+  autoSignIn()      { return Promise.resolve(null); }   // nobody is signed in
+  loadSnapshot()    { return Promise.resolve(null); }
+  saveSnapshot()    { return Promise.resolve(null); }
+}
+```
+
+### What the game does with it
+
+- **at launch**, `pgAutoSignIn()` is fired and forgotten. The title card is up
+  and playable while it is in flight, and it is timed out after
+  `CFG.PLAY_WAIT` (2.5s) so a wedged Play Services cannot hold the screen.
+- **on a successful sign-in**, a welcome banner slides down from the top with the
+  GamerTag and the Player ID on it — drawn by the game, once per session.
+- **on sign-in**, the cloud slot `pixeldino.save.v1` is read and merged. A merge
+  may only ever **add**: numbers are maxed, the wardrobe is unioned, and a stale
+  slot can never lower a distance, empty a wallet or un-gild a skin.
+- **automatically**, a snapshot is pushed whenever something really changed: a
+  new personal best, the 100,000m finish, or unlocking/equipping a skin.
+
+If you skip this whole section, nothing breaks: `save.dinoexe` in
+`localStorage` keeps working exactly as it does in the browser.
+
+### Verifying it on a device
+
+```bash
+npm test                          # 967 checks, incl. a stand-in host and a cold boot
+adb logcat | grep -i playgames    # your bridge's own logging
+```
+
+To confirm the real thing end to end, sign in on the device, play, force-stop the
+app, relaunch and check that the GamerTag is still on the title card and that
+`dinoexe.save.v1` in the host's `SharedPreferences` matches the run.
+
+---
+
+## Taking money — Play Billing
+
+> ### ⚠️ Do not use Bubblewrap for this
+>
+> A Trusted Web Activity is a web page inside Chrome. It has **no Play Billing,
+> no Play Games and no Google account**. The TWA route above produces an APK that
+> **cannot take money at all**. Use **Capacitor** (or your own WebView app) for a
+> release build. The `index.html` is unchanged either way.
+
+Google Play's payments policy requires Play Billing for any digital item sold on
+Android. Stripe and Paddle are both rejected. The product here is a **one-time
+non-consumable** — nothing expires, nothing renews, nothing needs cancelling.
+
+### 1. Create the product
+
+Play Console → your app → **Monetize → Products → Create product**:
+
+| Field | Value |
+| --- | --- |
+| Product ID | `dino_pro_lifetime` ← **must match `BILL.sku` in `index.html`** |
+| Type | One-time product |
+| Price | your call; the game prints whatever the store returns, not a hard-coded number |
+
+Nothing else in `index.html` changes.
+
+### 2. The bridge
+
+Same shape as the Play Games one. Two methods, both promises:
+
+| Member | Returns |
+| --- | --- |
+| `queryPurchases(sku)` | `{ owned: Boolean, price: String }` |
+| `launchBillingFlow(sku, page)` | `{ state: "purchased" \| "done" \| "cancelled", price: String }` |
+
+```js
+// android-app/src/.../PlayBilling.js
+import { registerPlugin } from '@capacitor/core';
+export const PlayBilling = registerPlugin('PlayBilling', {
+  web: () => import('./web').then(m => new m.PlayBillingWeb()),
+});
+```
+
+```js
+// android-app/src/.../PlayBillingWeb.js  — the browser stub
+export class PlayBillingWeb {
+  queryPurchases()    { return Promise.resolve({ owned: false }); }
+  launchBillingFlow() { return Promise.resolve({ state: 'cancelled' }); }
+}
+```
+
+With that stub, `BILLS.store` is false, the panel says **FREE FOREVER** and
+never prints a price — which is what Play's policy requires and what keeps the
+web build honest.
+
+### 3. Kotlin — the real thing
+
+```kotlin
+class BillingBridge(private val act: Activity) {
+  private var client: BillingClient? = null
+  private var pending: MethodChannel.Result? = null
+
+  fun start() {
+    client = BillingClient.newBuilder(act)
+      .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
+      .addConnectionListener(object : BillingClientStateListener {
+        override fun onBillingServiceReady() { /* query on the game thread */ }
+        override fun onBillingServiceDisconnected() { pending?.success("{\"state\":\"done\"}") }
+        override fun onBillingSetupFinished(t: Int, d: String) { pending?.success("null") }
+      })
+      .build()
+    client?.startConnection(object : BillingClientStateListener {
+      override fun onBillingSetupFinished(b: Int, d: String) {}
+      override fun onBillingServiceDisconnected() {}
+      override fun onBillingServiceReady() {}
+    })
+  }
+
+  @JavascriptInterface
+  fun queryPurchases(sku: String): String = runCatching {
+    val list = client?.queryPurchasesAsync(
+      QueryPurchasesParams.newBuilder().setProductList(listOf(sku)).build()
+    ).get()
+    val json = org.json.JSONObject()
+    json.put("owned", list.isNotEmpty())
+    /* priceText is Google's, localised and tax-inclusive — never compose your own */
+    if (list.isNotEmpty()) json.put("price", list[0].originalPrice ?: "")
+    json.toString()
+  }.getOrElse { "null" }
+}
+```
+
+Launching the flow itself needs a `BillingFlowParams` with the resolved
+`ProductDetails`, plus a `PurchasesUpdatedListener` that answers the JS call on
+`PurchasesUpdatedListener.PurchasesResult.OK` or `USER_CANCELED`. The contract
+the game expects is the two rows in the table above — nothing more.
+
+### 4. The two rules the game enforces for you
+
+- **A price is only printed when the store answered.** `BILLS.store` (a client
+  exists) and `BILLS.on` (it answered) are separate facts, so a *broken* store
+  can never be mistaken for an *absent* one and hand out the paid pass free.
+- **A purchase is restored silently** the moment `queryPurchases` says the
+  account owns it — no prompt, no re-purchase screen. Re-asking a paying player
+  for something they bought is the fastest way to fail a Play review.
+
+### 5. Achievements — free, and worth more than the pass
+
+Seven ids are fired by `achCheck()`: `CGI_CRASH`, `WIFI_1K`, `BOSS_1`,
+`BOSS_ALL`, `GLORY_100K`, `OVERDRIVE`, `STYLIST`. Create them in Play Console →
+**Achievements**, then forward them to `PlayGames.achievement(id)`.
+
+They are evaluated rather than sprinkled, so a new code path that beats a boss
+cannot forget to check. A host without `achievement()` disables the feature
+entirely.
+
+### Verifying money on a device
+
+```bash
+npm test                 # 1028 checks, incl. a stand-in store and a cold boot
+```
+
+Then, on a real device: open DINO PRO — the header must say **VIP PASS** and the
+key must quote a price. Tap it, complete the test purchase, and confirm the pass
+is granted. Force-stop the app, **clear its data**, relaunch, and the pass must
+come back by itself. If the header says **FREE**, the bridge is not registered.
+
+---
+
 ## Things worth knowing
 
 - **Audio needs a gesture.** The Web Audio context is created on the first tap
@@ -433,7 +674,8 @@ Point `assets/icon.png` at the 1024px icon this repo generates
 - **Saves live in `localStorage`** under `dinoexe.save.v2`, so coins, skins,
   PRO and the checkpoint survive app restarts. They do **not** survive an
   uninstall unless the app uses Android auto-backup (Capacitor enables it by
-  default).
+  default). If you implement **the Play Games bridge** above, the same save is
+  additionally filed to the Google Play Games cloud slot `pixeldino.save.v1`.
 - **Orientation and fullscreen are the app's, not the browser's.** The manifest
   asks for `landscape` + `fullscreen`, so a WebAPK (Chrome's own install) and a
   TWA both launch the device locked to landscape with no status bar. The page
