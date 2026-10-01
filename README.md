@@ -32,6 +32,13 @@ npm test           # headless harness: 1028 checks across physics, input, audio,
                    # AAB-ready
 ```
 
+The harness is **deterministic**: it seeds `Math.random` with a fixed LCG before
+the game script runs, so obstacle spawns, clouds, particles, pickups and the
+5,000-frame chaotic-play fuzz are identical on every run — three consecutive
+runs are byte-for-byte the same file. An unseeded suite is a coin flip: a check
+that watches the road passes or fails on how lucky the sample was, and this one
+was, at roughly one run in forty.
+
 Any static file server works — or double-click `index.html`.
 
 ## Install it as an app

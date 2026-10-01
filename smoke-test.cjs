@@ -298,6 +298,15 @@ els.game.getContext = () => ctx2d;
 const errors = [];
 const box = vm.createContext(sandbox);
 const read = expr => vm.runInContext(expr, box);
+/* ONE seeded RNG for the whole run.  The game spawns obstacles, clouds, particles
+   and pickups with Math.random(), and the endurance section drives it with
+   random keys, so an unseeded suite is a coin flip: a check that watches the
+   road passes or fails on how lucky the sample was.  A fixed LCG pins the entire
+   run, so the result is reproducible and a failure is a regression rather than
+   weather.  (Seeding only the pacing sample, as this file used to, left the rest
+   of the suite — and the fuzz — still random.) */
+let __seed = 0x9e3779b9 >>> 0;
+Math.random = () => ((__seed = (__seed * 1664525 + 1013904223) >>> 0) / 4294967296);
 
 /* ------------------------------- reporters -------------------------------- */
 let pass = 0, fail = 0;
