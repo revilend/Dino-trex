@@ -4,3 +4,14 @@
 # nothing here has any dependencies, so there is nothing to ignore beyond that
 node_modules/
 .DS_Store
+
+# Capacitor wrapper for the Android APK/AAB route
+android-app/node_modules/
+android-app/android/.gradle/
+android-app/android/local.properties
+android-app/android/app/build/
+android-app/android/.idea/
+android-app/android/*.apk
+android-app/android/*.aab
+android-app/android/app/src/main/assets/public/cordova.js
+android-app/android/app/src/main/assets/public/cordova_plugins.js

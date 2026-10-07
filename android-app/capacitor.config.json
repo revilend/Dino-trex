@@ -1,0 +1,12 @@
+{
+  "appId": "app.pixeldino.parkourrun",
+  "appName": "Pixel Dino",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#ffffff"
+  }
+}

@@ -1,0 +1,89 @@
+# Capacitor Android release AAB build
+name: Build Android AAB
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published]
+permissions:
+  contents: read
+concurrency:
+  group: android-aab
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('android-app/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Install wrapper npm deps
+        working-directory: android-app
+        run: npm ci
+
+      - name: Sync web assets into Android
+        working-directory: android-app
+        run: npx cap sync android
+
+      # capacitor.build.gradle pins sourceCompatibility/targetCompatibility to
+      # Java 21, so JDK 17 would fail with "invalid source release: 21".
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: android-app/android/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('android-app/android/*.gradle*', 'android-app/android/variables.gradle', 'android-app/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # Signing is optional: set the KEYSTORE_B64 / STORE_PASS / KEY_PASS repo
+      # secrets (base64 keystore, alias "pixeldino") and the bundle is signed
+      # with the Play upload key. Without them the bundle is still built and
+      # uploaded unsigned, which is enough for local testing via bundletool.
+      - name: Build release AAB
+        working-directory: android-app/android
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.STORE_PASS }}
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          ARGS=""
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+            ARGS="-Pandroid.injected.signing.store.file=$RUNNER_TEMP/upload.jks \
+                  -Pandroid.injected.signing.store.password=$STORE_PASS \
+                  -Pandroid.injected.signing.key.alias=pixeldino \
+                  -Pandroid.injected.signing.key.password=$KEY_PASS"
+          else
+            echo "::notice::No KEYSTORE_B64 secret; uploading an unsigned bundle."
+          fi
+          ./gradlew bundleRelease $ARGS
+
+      # Signed bundles are app-release.aab, unsigned ones app-release-unsigned.aab
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-dino-release-aab
+          path: android-app/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 90

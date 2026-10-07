@@ -1,0 +1,11 @@
+# Android Studio / Gradle
+.gradle
+local.properties
+*.iml
+.idea/
+*.swp
+*.swo
+*~
+*.apk
+*.aab
+captain.config.json
